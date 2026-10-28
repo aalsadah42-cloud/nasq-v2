@@ -474,7 +474,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
         <div>
           <div className="date-line"><CalendarDays size={15} /> الثلاثاء، ٢٧ أكتوبر ٢٠٢٦</div>
           <h1>هلا محمد <span>👋</span></h1>
-          <p>هذي لمحة سريعة عن مصروفاتكم والتزامات المجموعة.</p>
+          <p>هذي لمحة سريعة عن حسابك ومصروفاتك المشتركة والتزاماتك.</p>
         </div>
         <button className="button-primary welcome-cta" onClick={() => onNavigate('split')}><Plus size={17} /> سجّل مصروف</button>
       </section>
@@ -489,7 +489,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
       <section className="content-grid">
         <div className="panel expenses-panel">
           <div className="panel-heading">
-            <div><h2>آخر العمليات</h2><p>تابع مصروفات مجموعتك أولًا بأول</p></div>
+            <div><h2>آخر العمليات</h2><p>تابع مصروفاتك المشتركة أولًا بأول</p></div>
             <button className="text-button" onClick={() => onNavigate('activity')}>عرض الكل <ArrowUpLeft size={15} /></button>
           </div>
           <div className="expense-list">
@@ -508,7 +508,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
 
         <div className="panel upcoming-panel">
           <div className="panel-heading">
-            <div><h2>القادم عليكم</h2><p>لا تفوتوا موعد أي التزام</p></div>
+            <div><h2>التزاماتك القادمة</h2><p>لا تفوّت موعد أي التزام</p></div>
             <button className="icon-button mini" aria-label="عرض التقويم"><CalendarDays size={17} /></button>
           </div>
           <div className="due-card">
@@ -527,7 +527,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
 
       <section className="section-block">
         <div className="panel-heading section-heading">
-          <div><h2>مساحاتكم</h2><p>صناديق وجمعات تجمعكم على الواضح</p></div>
+          <div><h2>مساحاتك</h2><p>صناديقك وجمعاتك المشتركة في مكان واحد</p></div>
           <button className="text-button" onClick={() => onNavigate('funds')}>عرض الكل <ArrowUpLeft size={15} /></button>
         </div>
         <div className="fund-cards">
@@ -538,7 +538,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
       <section className="bottom-grid">
         <div className="panel gatherings-panel">
           <div className="panel-heading">
-            <div><h2>جمعاتكم الجاية</h2><p>خططوا لها من بدري</p></div>
+            <div><h2>جمعاتك القادمة</h2><p>خطّط لها من بدري</p></div>
             <button className="text-button" onClick={() => onNavigate('gatherings')}>كل الجمعات <ArrowUpLeft size={15} /></button>
           </div>
           {currentGatherings.slice(0, 1).map((gathering) => (
@@ -553,7 +553,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
           <span className="tip-icon"><Sparkles size={18} /></span>
           <span className="tip-eyebrow">نصيحة نسق</span>
           <h3>الوضوح يخلّي الوناسة تدوم</h3>
-          <p>سجّلوا المصروف وقتها، وخلو كل عضو يعرف حصته بكل سهولة.</p>
+          <p>سجّل المصروف وقت حدوثه، وتعرّف على حصة كل عضو بسهولة.</p>
           <button onClick={() => onNavigate('split')}>جرّب القسمة السريعة <ArrowUpLeft size={15} /></button>
           <span className="tip-decoration">ق</span>
         </div>

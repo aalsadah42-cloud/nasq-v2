@@ -2671,6 +2671,10 @@ td:first-child small {
   .fund-balance strong { display: block; margin-top: 3px; font-size: 13px; }
   .tip-card { min-height: 155px; box-sizing: border-box; }
   .page-footer { align-items: flex-start; flex-direction: column; margin-top: 20px; }
+  .button-primary,
+  .button-outline { min-height: 44px; }
+  .icon-button { width: 44px; height: 44px; }
+  .fund-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .split-layout { grid-template-columns: 1fr; }
   .split-summary { position: static; }
   .activity-time { width: auto; }
@@ -2700,7 +2704,7 @@ td:first-child small {
 @media (max-width: 470px) {
   .page-content { padding-right: 12px; padding-left: 12px; }
   .topbar { padding-right: 10px; padding-left: 10px; }
-  .notification-button { width: 32px; height: 32px; }
+  .notification-button { width: 44px; height: 44px; }
   .welcome-row { gap: 9px; }
   .welcome-row h1 { font-size: 21px; }
   .welcome-row p { font-size: 10px; }
@@ -2734,25 +2738,67 @@ td:first-child small {
   .balance-mini-stats { gap: 8px; }
   .balance-mini-stats span { padding-left: 0; font-size: 7px; }
   .balance-mini-stats span + span { padding-right: 8px; }
+  .balance-mini-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 10px 8px;
+  }
+  .balance-mini-stats span { min-width: 0; line-height: 1.5; }
+  .balance-mini-stats span + span { border-right: 0; padding-right: 0; }
+  .balance-mini-stats span:last-child { grid-column: 1 / -1; }
   .fund-workspace-actions { grid-template-columns: 1fr; }
   .fund-workspace-actions > button { min-height: 49px; padding: 8px 10px; }
   .fund-workspace-actions > button > svg { margin-right: auto; }
   .kattah-header-actions { gap: 5px; }
-  .batch-approve { min-height: 28px; padding: 0 6px; font-size: 7px; }
+  .kattah-panel > .panel-heading { align-items: stretch; flex-direction: column; }
+  .kattah-header-actions { width: 100%; justify-content: space-between; }
+  .batch-approve { min-height: 44px; padding: 0 10px; font-size: 9px; }
   .request-summary { padding: 9px; gap: 8px; }
   .request-summary > span { flex: 1 1 40%; }
   .contribution-row,
   .obligation-row,
-  .reimbursement-row { flex-wrap: wrap; padding: 7px 0; }
+  .reimbursement-row {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px 10px;
+    min-height: 0;
+    padding: 11px 0;
+  }
+  .contribution-row > .person-avatar,
+  .obligation-row > .obligation-icon,
+  .reimbursement-row > .expense-icon { grid-column: 1; grid-row: 1 / span 2; }
   .contribution-name,
   .obligation-name,
-  .reimbursement-name { flex: 1 1 calc(100% - 48px); }
-  .fund-status-badge { margin-right: 37px; }
-  .contribution-row .row-action,
-  .obligation-row .row-action,
-  .reimbursement-row .review-actions { margin-right: auto; }
-  .obligation-amount { margin-right: 37px; }
-  .reimbursement-row .expense-icon + .reimbursement-name { flex-basis: calc(100% - 50px); }
+  .reimbursement-name { grid-column: 2; grid-row: 1; min-width: 0; }
+  .contribution-name strong,
+  .obligation-name strong,
+  .reimbursement-name strong { font-size: 9px; }
+  .contribution-name small,
+  .obligation-name small,
+  .reimbursement-name small { font-size: 8px; }
+  .fund-status-badge { grid-column: 2; grid-row: 2; max-width: none; margin: 0; font-size: 8px; white-space: normal; }
+  .contribution-row .row-action { grid-column: 3; grid-row: 1 / span 2; min-height: 44px; margin: 0; padding: 0 10px; }
+  .member-waiting,
+  .contribution-row .verified-mark { grid-column: 3; grid-row: 1 / span 2; margin: 0; text-align: center; white-space: normal; }
+  .obligation-amount,
+  .reimbursement-row > .obligation-amount { grid-column: 3; grid-row: 1; margin: 0; white-space: nowrap; }
+  .obligation-row .fund-status-badge,
+  .reimbursement-row .fund-status-badge { grid-column: 2; grid-row: 2; }
+  .obligation-row .row-action { grid-column: 2 / -1; grid-row: 3; width: 100%; min-height: 44px; margin: 0; }
+  .obligation-row .verified-mark { grid-column: 3; grid-row: 2; }
+  .reimbursement-row .review-actions {
+    display: grid;
+    grid-column: 2 / -1;
+    grid-row: 3;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    width: 100%;
+    margin: 0;
+  }
+  .reimbursement-row .review-actions .row-action,
+  .reimbursement-row .review-actions .reject-action { min-height: 44px; margin: 0; padding: 0 10px; }
   .fund-form-fields { grid-template-columns: 1fr; }
   .fund-history-rows .activity-row { gap: 7px; }
   .fund-history-rows .activity-time { display: none; }
