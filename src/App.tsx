@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import { create } from 'zustand'
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -15,6 +16,7 @@ import {
   Clock3,
   CreditCard,
   LayoutDashboard,
+  Languages,
   MapPin,
   Menu,
   Plus,
@@ -33,7 +35,32 @@ import './App.css'
 type View = 'overview' | 'funds' | 'gatherings' | 'split' | 'activity'
 type CreateKind = 'fund' | 'gathering'
 type Fund = { title: string; members: number; balance: number; icon: string; color: string; due: string }
-type Gathering = { title: string; date: string; location: string; attendees: number; total: number; badge: string; badgeColor: string; icon: string }
+type GatheringDecision = 'joined' | 'declined' | 'pending'
+type GatheringParticipant = { name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid' }
+type GatheringExpense = { id: number; description: string; payer: string; amount: number }
+type Gathering = {
+  id: string
+  createdById: string
+  title: string
+  date: string
+  eventAt: number
+  deadlineAt: number
+  location: string
+  attendees: number
+  total: number
+  badge: string
+  badgeColor: string
+  icon: string
+  participants: GatheringParticipant[]
+  expenses: GatheringExpense[]
+  estimatedCost?: number
+}
+type GatheringLanguage = 'ar' | 'en'
+const currentUserId = 'mohammed'
+type GatheringStore = {
+  gatherings: Gathering[]
+  updateGatherings: (updater: (current: Gathering[]) => Gathering[]) => void
+}
 type PaymentStatus = 'paid' | 'awaiting' | 'unpaid'
 type Contribution = { name: string; amount: number; status: PaymentStatus }
 type KattahRequest = { id: number; title: string; cadence: string; total: number; due: string; contributions: Contribution[] }
@@ -95,10 +122,45 @@ const initialFundActivity: FundActivity[] = [
   { id: 3, title: 'إضافة التزام شهري', detail: 'فاتورة الكهرباء · استراحة الشباب', amount: '٣٨٠ ر.س', kind: 'event', time: '٢٥ أكتوبر، ١١:٤٠ ص' },
 ]
 
+const createInitialGathering = (id: string, title: string, dayOffset: number, location: string, icon: string): Gathering => {
+  const eventDate = new Date()
+  eventDate.setDate(eventDate.getDate() + dayOffset)
+  eventDate.setHours(19, 30, 0, 0)
+  const participants: GatheringParticipant[] = [
+    { name: 'محمد السالم', decision: 'joined' },
+    { name: 'أحمد العتيبي', decision: 'joined' },
+    { name: 'سارة محمد', decision: 'joined' },
+    { name: 'خالد الحربي', decision: 'joined' },
+    { name: 'نورة سعد', decision: 'pending' },
+    { name: 'عبدالله فهد', decision: 'pending' },
+  ]
+  return {
+    id,
+    createdById: 'ahmed',
+    title,
+    date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventDate),
+    eventAt: eventDate.getTime(),
+    deadlineAt: Date.now() + (dayOffset === 1 ? 2 : 30) * 60 * 60 * 1000,
+    location,
+    attendees: participants.filter((person) => person.decision === 'joined').length,
+    total: participants.length,
+    badge: 'التصويت مفتوح',
+    badgeColor: 'green',
+    icon,
+    participants,
+    expenses: [],
+  }
+}
+
 const gatherings: Gathering[] = [
-  { title: 'عشاء نهاية الأسبوع', date: 'الجمعة، ٣٠ أكتوبر', location: 'اختروا المطعم', attendees: 7, total: 10, badge: 'التصويت مفتوح', badgeColor: 'green', icon: '🍽️' },
-  { title: 'مباراة الهلال والنصر', date: 'السبت، ٣١ أكتوبر', location: 'استراحة الشباب', attendees: 8, total: 8, badge: 'اكتمل العدد', badgeColor: 'blue', icon: '⚽' },
+  createInitialGathering('gathering-1', 'عشاء نهاية الأسبوع', 1, 'اختروا المطعم', '🍽️'),
+  createInitialGathering('gathering-2', 'مباراة الهلال والنصر', 2, 'استراحة الشباب', '⚽'),
 ]
+
+const useGatheringStore = create<GatheringStore>((set) => ({
+  gatherings,
+  updateGatherings: (updater) => set((state) => ({ gatherings: updater(state.gatherings) })),
+}))
 
 const activityItems = [
   { title: 'أحمد أضاف مصروفًا جديدًا', detail: 'مقاضي الاستراحة · استراحة الشباب', amount: '+ ٢٤٨ ر.س', time: 'منذ ساعتين', kind: 'pending' },
@@ -108,6 +170,40 @@ const activityItems = [
 
 const money = (value: number) =>
   new Intl.NumberFormat('ar-SA', { maximumFractionDigits: 2 }).format(value)
+
+type DeadlinePreset = '30m' | '1h' | '2h' | 'before24h' | 'before6h' | 'before1h' | 'previousEvening'
+type DeadlineOption = { id: DeadlinePreset; labelAr: string; labelEn: string; at: number }
+
+const eventTimeFor = (dayOffset: number, time: string) => {
+  const [hours, minutes] = time.split(':').map(Number)
+  const eventDate = new Date()
+  eventDate.setDate(eventDate.getDate() + dayOffset)
+  eventDate.setHours(hours, minutes, 0, 0)
+  return eventDate.getTime()
+}
+
+const deadlineOptionsFor = (dayOffset: number, eventAt: number): DeadlineOption[] => {
+  const now = Date.now()
+  const options: DeadlineOption[] = dayOffset === 0
+    ? [
+      { id: '30m', labelAr: 'بعد ٣٠ دقيقة', labelEn: 'In 30 minutes', at: now + 30 * 60 * 1000 },
+      { id: '1h', labelAr: 'بعد ساعة', labelEn: 'In 1 hour', at: now + 60 * 60 * 1000 },
+      { id: '2h', labelAr: 'بعد ساعتين', labelEn: 'In 2 hours', at: now + 2 * 60 * 60 * 1000 },
+      { id: 'before1h', labelAr: 'قبل الموعد بساعة', labelEn: '1 hour before', at: eventAt - 60 * 60 * 1000 },
+    ]
+    : [
+      { id: 'previousEvening', labelAr: 'مساء اليوم السابق', labelEn: 'Previous evening', at: (() => {
+        const evening = new Date(eventAt)
+        evening.setDate(evening.getDate() - 1)
+        evening.setHours(20, 0, 0, 0)
+        return evening.getTime()
+      })() },
+      { id: 'before24h', labelAr: 'قبل الموعد بـ ٢٤ ساعة', labelEn: '24 hours before', at: eventAt - 24 * 60 * 60 * 1000 },
+      { id: 'before6h', labelAr: 'قبل الموعد بـ ٦ ساعات', labelEn: '6 hours before', at: eventAt - 6 * 60 * 60 * 1000 },
+      { id: 'before1h', labelAr: 'قبل الموعد بساعة', labelEn: '1 hour before', at: eventAt - 60 * 60 * 1000 },
+    ]
+  return options.filter((option) => option.at > now && option.at < eventAt)
+}
 
 function App() {
   const [activeView, setActiveView] = useState<View>('overview')
@@ -120,9 +216,17 @@ function App() {
   const [splitSaved, setSplitSaved] = useState(false)
   const [createKind, setCreateKind] = useState<CreateKind | null>(null)
   const [createdFunds, setCreatedFunds] = useState<Fund[]>([])
-  const [createdGatherings, setCreatedGatherings] = useState<Gathering[]>([])
+  const gatheringItems = useGatheringStore((state) => state.gatherings)
+  const setGatheringItems = useGatheringStore((state) => state.updateGatherings)
   const [createName, setCreateName] = useState('')
   const [createDetail, setCreateDetail] = useState('')
+  const [gatheringLocation, setGatheringLocation] = useState('')
+  const [gatheringDayOffset, setGatheringDayOffset] = useState(1)
+  const [gatheringTime, setGatheringTime] = useState('19:30')
+  const [gatheringDeadline, setGatheringDeadline] = useState<DeadlinePreset>('before24h')
+  const [gatheringEstimate, setGatheringEstimate] = useState('')
+  const [gatheringFormError, setGatheringFormError] = useState('')
+  const [gatheringsLanguage, setGatheringsLanguage] = useState<GatheringLanguage>('ar')
   const [createdMessage, setCreatedMessage] = useState('')
   const [fundBalances, setFundBalances] = useState<Record<string, number>>({})
   const [kattahRequests, setKattahRequests] = useState(initialKattahRequests)
@@ -130,7 +234,7 @@ function App() {
   const [reimbursements, setReimbursements] = useState(initialReimbursements)
   const [fundHistory, setFundHistory] = useState(initialFundActivity)
   const allFunds = [...funds, ...createdFunds].map((fund) => ({ ...fund, balance: fundBalances[fund.title] ?? fund.balance }))
-  const allGatherings = [...gatherings, ...createdGatherings]
+  const allGatherings = gatheringItems
 
   const total = Number(amount) || 0
   const evenShare = people.length ? total / people.length : 0
@@ -147,6 +251,12 @@ function App() {
     setCreateKind(kind)
     setCreateName('')
     setCreateDetail('')
+    setGatheringLocation('')
+    setGatheringDayOffset(1)
+    setGatheringTime('19:30')
+    setGatheringDeadline('before24h')
+    setGatheringEstimate('')
+    setGatheringFormError('')
     setCreatedMessage('')
     setMenuOpen(false)
   }
@@ -154,7 +264,11 @@ function App() {
   const saveNewItem = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const name = createName.trim()
-    if (!name || !createKind) return
+    if (!createKind) return
+    if (!name) {
+      if (createKind === 'gathering') setGatheringFormError(gatheringsLanguage === 'ar' ? 'اكتب عنوانًا للجمعة.' : 'Enter a gathering title.')
+      return
+    }
 
     if (createKind === 'fund') {
       setCreatedFunds((current) => [...current, {
@@ -166,21 +280,101 @@ function App() {
         due: createDetail.trim() || 'لا توجد التزامات قادمة',
       }])
     } else {
-      setCreatedGatherings((current) => [...current, {
+      const eventAt = eventTimeFor(gatheringDayOffset, gatheringTime)
+      const options = deadlineOptionsFor(gatheringDayOffset, eventAt)
+      const selectedDeadline = options.find((option) => option.id === gatheringDeadline) ?? options[0]
+      if (eventAt <= Date.now() || !selectedDeadline) {
+        setGatheringFormError(gatheringsLanguage === 'ar' ? 'اختر وقتًا مستقبليًا وموعد إغلاق يسبقه.' : 'Choose a future time and an RSVP deadline before it.')
+        return
+      }
+      const participants: GatheringParticipant[] = [
+        { name: 'محمد السالم', decision: 'joined' },
+        { name: 'أحمد العتيبي', decision: 'pending' },
+        { name: 'سارة محمد', decision: 'pending' },
+        { name: 'خالد الحربي', decision: 'pending' },
+      ]
+      setGatheringItems((current) => [{
+        id: `gathering-${Date.now()}`,
+        createdById: currentUserId,
         title: name,
-        date: createDetail.trim() || 'حدّدوا الموعد',
-        location: 'بانتظار اختيار المكان',
-        attendees: 0,
-        total: 1,
-        badge: 'التأكيد مفتوح',
+        date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventAt),
+        eventAt,
+        deadlineAt: selectedDeadline.at,
+        location: gatheringLocation.trim() || 'لم يُحدّد الموقع بعد',
+        attendees: 1,
+        total: participants.length,
+        badge: 'التصويت مفتوح',
         badgeColor: 'green',
         icon: '🎉',
-      }])
+        participants,
+        expenses: [],
+        estimatedCost: Number(gatheringEstimate) || undefined,
+      }, ...current])
     }
 
     setCreateKind(null)
-    setCreatedMessage(`تمت إضافة ${createKind === 'fund' ? 'الصندوق' : 'الجمعة'} «${name}» إلى مساحة عملك.`)
+    setCreatedMessage(createKind === 'gathering' && gatheringsLanguage === 'en'
+      ? `Gathering "${name}" was added to your workspace.`
+      : `تمت إضافة ${createKind === 'fund' ? 'الصندوق' : 'الجمعة'} «${name}» إلى مساحة عملك.`)
     window.setTimeout(() => setCreatedMessage(''), 3500)
+  }
+
+  const voteOnGathering = (gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => {
+    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    if (!gathering || gathering.deadlineAt <= Date.now()) return
+    setGatheringItems((current) => current.map((item) => item.id === gatheringId
+      ? {
+        ...item,
+        participants: item.participants.map((person) => ({
+          ...person,
+          ...(person.name === 'محمد السالم' ? { decision } : {}),
+          settlementStatus: undefined,
+        })),
+        attendees: item.participants.filter((person) => person.name === 'محمد السالم' ? decision === 'joined' : person.decision === 'joined').length,
+      }
+      : item))
+  }
+
+  const cancelGathering = (gatheringId: string) => {
+    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    if (!gathering || gathering.createdById !== currentUserId) return
+    setGatheringItems((current) => current.filter((item) => item.id !== gatheringId))
+  }
+
+  const addLateGatheringParticipant = (gatheringId: string, name: string) => {
+    const normalizedName = name.trim()
+    if (!normalizedName) return
+    setGatheringItems((current) => current.map((item) => {
+      if (item.id !== gatheringId || item.participants.some((person) => person.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return item
+      const participants = [...item.participants.map((person) => ({ ...person, settlementStatus: undefined })), { name: normalizedName, decision: 'joined' as const, late: true }]
+      return { ...item, participants, attendees: participants.filter((person) => person.decision === 'joined').length, total: participants.length }
+    }))
+  }
+
+  const addGatheringExpense = (gatheringId: string, description: string, payer: string, amount: number) => {
+    if (!description.trim() || !payer || !Number.isFinite(amount) || amount <= 0) return
+    setGatheringItems((current) => current.map((item) => item.id === gatheringId
+      ? {
+        ...item,
+        expenses: [...item.expenses, { id: Date.now(), description: description.trim(), payer, amount }],
+        participants: item.participants.map((person) => ({ ...person, settlementStatus: undefined })),
+      }
+      : item))
+  }
+
+  const setGatheringSettlementStatus = (gatheringId: string, memberName: string, status: 'pending' | 'paid') => {
+    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    if (!gathering || gathering.createdById !== currentUserId) return
+    const row = getSettlementRows(gathering).find((item) => item.name === memberName)
+    if (!row || row.balance >= 0) return
+    setGatheringItems((current) => current.map((item) => item.id === gatheringId
+      ? {
+        ...item,
+        participants: item.participants.map((person) => person.name === memberName
+          ? { ...person, settlementStatus: status }
+          : person),
+      }
+      : item))
   }
 
   const showFundMessage = (message: string) => {
@@ -420,7 +614,25 @@ function App() {
             onDecideReimbursement={decideReimbursement}
             onConfirmReimbursementReceipt={confirmReimbursementReceipt}
           />}
-          {activeView === 'gatherings' && <GatheringsView onNavigate={openView} onCreate={() => startCreate('gathering')} gatherings={allGatherings} />}
+          {activeView === 'gatherings' && <GatheringsView
+            language={gatheringsLanguage}
+            onLanguageChange={setGatheringsLanguage}
+            onNavigate={openView}
+            onCreate={() => startCreate('gathering')}
+            gatherings={allGatherings}
+            onVote={voteOnGathering}
+            onCancelGathering={cancelGathering}
+            onAddLateParticipant={addLateGatheringParticipant}
+            onAddExpense={addGatheringExpense}
+            onSetSettlementStatus={setGatheringSettlementStatus}
+            onDeadline={(gatheringId, attendees) => {
+              const gathering = gatheringItems.find((item) => item.id === gatheringId)
+              if (gathering) showFundMessage(gatheringsLanguage === 'ar'
+                ? `انتهى التصويت على «${gathering.title}». العدد النهائي: ${attendees} مشارك.`
+                : `RSVP closed for "${gathering.title}". Final count: ${attendees} attendees.`)
+            }}
+            onReminder={() => showFundMessage(gatheringsLanguage === 'ar' ? 'تم تسجيل تذكير ودي بالتسوية. لا يتم خصم أي مبلغ تلقائيًا.' : 'A friendly settlement reminder was recorded. No funds are charged automatically.')}
+          />}
           {activeView === 'split' && (
             <SplitView
               amount={amount}
@@ -450,16 +662,72 @@ function App() {
       </main>
       {createKind && (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateKind(null) }}>
-          <form className="create-modal" onSubmit={saveNewItem}>
+          <form className={`create-modal ${createKind === 'gathering' && gatheringsLanguage === 'en' ? 'modal-english' : ''}`} onSubmit={saveNewItem}>
             <button type="button" className="icon-button modal-close" aria-label="إغلاق" onClick={() => setCreateKind(null)}><X size={18} /></button>
             <span className="modal-icon">{createKind === 'fund' ? <Wallet size={21} /> : <UsersRound size={21} />}</span>
-            <span className="date-line">{createKind === 'fund' ? 'مصروفاتكم المستمرة' : 'خططوا لها سوا'}</span>
-            <h2>{createKind === 'fund' ? 'أنشئ صندوقًا جديدًا' : 'رتّبوا جمعتكم الجاية'}</h2>
-            <p>{createKind === 'fund' ? 'اجمع التزامات ومصروفات مجموعتك في مكان واحد.' : 'ابدأوا بتسمية المناسبة وحددوا موعدًا مبدئيًا.'}</p>
-            <label className="modal-field"><span>{createKind === 'fund' ? 'اسم الصندوق' : 'اسم المناسبة'}</span><input autoFocus required value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: سكن الأصدقاء' : 'مثال: عشاء نهاية الأسبوع'} /></label>
-            <label className="modal-field"><span>{createKind === 'fund' ? 'أقرب التزام (اختياري)' : 'الموعد المبدئي (اختياري)'}</span><input value={createDetail} onChange={(event) => setCreateDetail(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: فاتورة الإنترنت · ١ نوفمبر' : 'مثال: الجمعة، ٣٠ أكتوبر'} /></label>
-            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setCreateKind(null)}>إلغاء</button><button type="submit" className="button-primary"><Plus size={16} /> {createKind === 'fund' ? 'إنشاء الصندوق' : 'إنشاء الجمعة'}</button></div>
-            <small className="modal-prototype-note">نموذج أولي · تُحفظ الإضافة لهذه الجلسة فقط</small>
+            <span className="date-line">{createKind === 'fund' ? 'مصروفاتكم المستمرة' : gatheringsLanguage === 'ar' ? 'خططوا لها سوا' : 'Plan it together'}</span>
+            <h2>{createKind === 'fund' ? 'أنشئ صندوقًا جديدًا' : gatheringsLanguage === 'ar' ? 'رتّبوا جمعتكم الجاية' : 'Create a gathering'}</h2>
+            <p>{createKind === 'fund' ? 'اجمع التزامات ومصروفات مجموعتك في مكان واحد.' : gatheringsLanguage === 'ar' ? 'اختر موعدًا سريعًا وحدد آخر وقت لقبول الدعوة.' : 'Choose a quick date and set the RSVP deadline.'}</p>
+            <label className="modal-field"><span>{createKind === 'fund' ? 'اسم الصندوق' : gatheringsLanguage === 'ar' ? 'عنوان الجمعة' : 'Gathering title'}</span><input autoFocus required value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: سكن الأصدقاء' : gatheringsLanguage === 'ar' ? 'مثال: عشاء فريق العمل' : 'e.g. Team dinner'} /></label>
+            {createKind === 'fund' ? (
+              <label className="modal-field"><span>أقرب التزام (اختياري)</span><input value={createDetail} onChange={(event) => setCreateDetail(event.target.value)} placeholder="مثال: فاتورة الإنترنت · ١ نوفمبر" /></label>
+            ) : (
+              <>
+                <label className="modal-field"><span>{gatheringsLanguage === 'ar' ? 'الموقع' : 'Location'}</span><input value={gatheringLocation} onChange={(event) => setGatheringLocation(event.target.value)} placeholder={gatheringsLanguage === 'ar' ? 'مثال: استراحة الشباب' : 'e.g. The cabin'} /></label>
+                <div className="modal-field">
+                  <span>{gatheringsLanguage === 'ar' ? 'اختر اليوم · خلال الأسبوعين القادمين' : 'Choose a day · next 14 days'}</span>
+                  <div className="mini-date-selector" role="group" aria-label={gatheringsLanguage === 'ar' ? 'اختر يوم المناسبة' : 'Choose gathering date'}>
+                    {Array.from({ length: 14 }, (_, dayOffset) => {
+                      const date = new Date(eventTimeFor(dayOffset, '12:00'))
+                      const selected = gatheringDayOffset === dayOffset
+                      const isToday = dayOffset === 0
+                      const dateLabel = new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'long', day: 'numeric', month: 'long' }).format(date)
+                      return (
+                        <button
+                          key={dayOffset}
+                          type="button"
+                          className={`mini-date-button ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                          aria-label={`${dateLabel}${isToday ? ` · ${gatheringsLanguage === 'ar' ? 'اليوم' : 'Today'}` : ''}`}
+                          aria-pressed={selected}
+                          onClick={() => {
+                            setGatheringDayOffset(dayOffset)
+                            setGatheringDeadline(deadlineOptionsFor(dayOffset, eventTimeFor(dayOffset, gatheringTime))[0]?.id ?? (dayOffset === 0 ? '2h' : 'before24h'))
+                          }}
+                        >
+                          <span>{isToday ? (gatheringsLanguage === 'ar' ? 'اليوم' : 'Today') : new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'short' }).format(date)}</span>
+                          <strong>{new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { day: 'numeric' }).format(date)}</strong>
+                          <small>{new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { month: 'short' }).format(date)}</small>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <label className="modal-field custom-time-field">
+                  <span>{gatheringsLanguage === 'ar' ? 'أو اختر وقتًا دقيقًا' : 'Or choose an exact time'}</span>
+                  <span className="custom-time-input-wrap"><Clock3 size={16} /><input type="time" value={gatheringTime} onChange={(event) => {
+                    const time = event.target.value
+                    if (!time) return
+                    setGatheringTime(time)
+                    setGatheringDeadline(deadlineOptionsFor(gatheringDayOffset, eventTimeFor(gatheringDayOffset, time))[0]?.id ?? gatheringDeadline)
+                  }} /></span>
+                </label>
+                <label className="modal-field">
+                  <span>{gatheringsLanguage === 'ar' ? 'آخر موعد للانضمام أو الاعتذار' : 'RSVP deadline'}</span>
+                  <select value={gatheringDeadline} onChange={(event) => {
+                    const preset = deadlineOptionsFor(gatheringDayOffset, eventTimeFor(gatheringDayOffset, gatheringTime)).find((option) => option.id === event.target.value)
+                    if (preset) setGatheringDeadline(preset.id)
+                  }}>
+                    {deadlineOptionsFor(gatheringDayOffset, eventTimeFor(gatheringDayOffset, gatheringTime)).map((option) => (
+                      <option key={option.id} value={option.id}>{gatheringsLanguage === 'ar' ? option.labelAr : option.labelEn}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="modal-field"><span>{gatheringsLanguage === 'ar' ? 'التكلفة التقديرية للفرد · اختياري' : 'Estimated cost per person · optional'}</span><input min="0" type="number" value={gatheringEstimate} onChange={(event) => setGatheringEstimate(event.target.value)} placeholder="0" /></label>
+                {gatheringFormError && <p className="form-error" role="alert">{gatheringFormError}</p>}
+              </>
+            )}
+            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setCreateKind(null)}>{createKind === 'fund' || gatheringsLanguage === 'ar' ? 'إلغاء' : 'Cancel'}</button><button type="submit" className="button-primary"><Plus size={16} /> {createKind === 'fund' ? 'إنشاء الصندوق' : gatheringsLanguage === 'ar' ? 'إنشاء الجمعة' : 'Create gathering'}</button></div>
+            {createKind === 'fund' && <small className="modal-prototype-note">نموذج أولي · تُحفظ الإضافة لهذه الجلسة فقط</small>}
           </form>
         </div>
       )}
@@ -789,26 +1057,258 @@ function FundsView({
   )
 }
 
-function GatheringsView({ onNavigate, onCreate, gatherings: currentGatherings }: { onNavigate: (view: View) => void; onCreate: () => void; gatherings: Gathering[] }) {
+function GatheringsView({
+  language,
+  onLanguageChange,
+  onNavigate,
+  onCreate,
+  gatherings: currentGatherings,
+  onVote,
+  onCancelGathering,
+  onAddLateParticipant,
+  onAddExpense,
+  onSetSettlementStatus,
+  onDeadline,
+  onReminder,
+}: {
+  language: GatheringLanguage
+  onLanguageChange: (language: GatheringLanguage) => void
+  onNavigate: (view: View) => void
+  onCreate: () => void
+  gatherings: Gathering[]
+  onVote: (gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => void
+  onCancelGathering: (gatheringId: string) => void
+  onAddLateParticipant: (gatheringId: string, name: string) => void
+  onAddExpense: (gatheringId: string, description: string, payer: string, amount: number) => void
+  onSetSettlementStatus: (gatheringId: string, memberName: string, status: 'pending' | 'paid') => void
+  onDeadline: (gatheringId: string, attendees: number) => void
+  onReminder: () => void
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [lateName, setLateName] = useState('')
+  const [lateFormError, setLateFormError] = useState('')
+  const [expenseDescription, setExpenseDescription] = useState('')
+  const [expensePayer, setExpensePayer] = useState('')
+  const [expenseAmount, setExpenseAmount] = useState('')
+  const [expenseFormError, setExpenseFormError] = useState('')
+  const notifiedDeadlines = useRef(new Set<string>())
+  const isEnglish = language === 'en'
+  const formatMoney = (value: number) => new Intl.NumberFormat(isEnglish ? 'en-SA' : 'ar-SA', { maximumFractionDigits: 2 }).format(value)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    for (const gathering of currentGatherings) {
+      if (gathering.deadlineAt <= now && !notifiedDeadlines.current.has(gathering.id)) {
+        notifiedDeadlines.current.add(gathering.id)
+        onDeadline(gathering.id, gathering.participants.filter((person) => person.decision === 'joined').length)
+      }
+    }
+  }, [currentGatherings, now, onDeadline])
+
+  const selectedGathering = currentGatherings.find((gathering) => gathering.id === selectedId)
+  const settlementRows = selectedGathering ? getSettlementRows(selectedGathering) : []
+
+  const submitLateParticipant = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedGathering || !lateName.trim()) return
+    if (selectedGathering.participants.some((person) => person.name.toLocaleLowerCase() === lateName.trim().toLocaleLowerCase())) {
+      setLateFormError(isEnglish ? 'This member is already on the list.' : 'هذا العضو موجود في القائمة بالفعل.')
+      return
+    }
+    onAddLateParticipant(selectedGathering.id, lateName)
+    setLateName('')
+    setLateFormError('')
+  }
+
+  const submitExpense = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedGathering) return
+    if (!expenseDescription.trim()) {
+      setExpenseFormError(isEnglish ? 'Enter expense details.' : 'اكتب تفاصيل المصروف.')
+      return
+    }
+    const payer = selectedGathering.participants.some((person) => person.name === expensePayer)
+      ? expensePayer
+      : selectedGathering.participants[0]?.name
+    if (!payer || !Number.isFinite(Number(expenseAmount)) || Number(expenseAmount) <= 0) {
+      setExpenseFormError(isEnglish ? 'Choose a payer and enter a positive amount.' : 'اختر الدافع وأدخل مبلغًا أكبر من صفر.')
+      return
+    }
+    onAddExpense(selectedGathering.id, expenseDescription, payer, Number(expenseAmount))
+    setExpenseDescription('')
+    setExpenseAmount('')
+    setExpenseFormError('')
+  }
+
   return (
-    <>
-      <PageIntro eyebrow="خططوا لها سوا" title="الجمعات" description="رتّبوا الطلعة، صوّتوا على الخيارات، واعرفوا مين أكّد حضوره." action="إنشاء جمعة" onAction={onCreate} />
-      <div className="gathering-note"><span className="tip-icon"><Sparkles size={17} /></span><span><strong>تأكيد الحضور مو التزام دفع</strong><small>تقدرون تحدّثون الحضور والتكلفة حتى بعد التصويت، قبل ما تثبتون التسوية.</small></span><Check size={18} /></div>
-      <section className="gathering-cards">
-        {currentGatherings.map((gathering) => (
-          <article className="panel gathering-card" key={gathering.title}>
-            <div className="gathering-card-top"><span className="gathering-emoji large-emoji">{gathering.icon}</span><span className={`pill ${gathering.badgeColor}-pill`}>{gathering.badge}</span></div>
-            <h2>{gathering.title}</h2>
-            <div className="gathering-meta"><span><CalendarDays size={15} /> {gathering.date}</span><span><MapPin size={15} /> {gathering.location}</span></div>
-            <div className="attendee-block"><div className="attendee-label"><span><UsersRound size={15} /> تأكيدات الحضور</span><strong>{gathering.attendees} <small>/ {gathering.total}</small></strong></div><div className="progress-track"><span style={{ width: `${(gathering.attendees / gathering.total) * 100}%` }} /></div></div>
-            <div className="gathering-card-footer"><span>التكلفة للفرد <strong>تُحدّد بعد التأكيد</strong></span><button className="button-outline" onClick={() => onNavigate('split')}>عرض التفاصيل <ArrowUpLeft size={15} /></button></div>
-          </article>
-        ))}
-        <button className="new-gathering-card" onClick={() => onNavigate('split')}><span><Plus size={21} /></span><strong>رتّبوا جمعتكم الجاية</strong><small>ادعُ أصحابك واتفقوا على الوقت والمكان</small></button>
+    <div className={isEnglish ? 'gatherings-view gatherings-english' : 'gatherings-view'} dir={isEnglish ? 'ltr' : 'rtl'}>
+      <section className="welcome-row page-intro">
+        <div>
+          <div className="date-line"><Sparkles size={15} /> {isEnglish ? 'Plan it together' : 'خططوا لها سوا'}</div>
+          <h1>{isEnglish ? 'Gatherings' : 'الجمعات'}</h1>
+          <p>{isEnglish ? 'Plan quickly, see who is coming, and keep expenses organized.' : 'رتب اللقاء بسرعة، واعرف من سيحضر، ونسّق المصروفات بشكل مرتب.'}</p>
+        </div>
+        <div className="gathering-page-actions">
+          <button className="button-outline language-toggle" onClick={() => onLanguageChange(isEnglish ? 'ar' : 'en')}><Languages size={16} /> {isEnglish ? 'العربية' : 'English'}</button>
+          <button className="button-primary welcome-cta" onClick={onCreate}><Plus size={17} /> {isEnglish ? 'New gathering' : 'إنشاء جمعة'}</button>
+        </div>
       </section>
-      <section className="panel table-panel"><div className="panel-heading"><div><h2>آخر الجمعات</h2><p>المناسبات السابقة والتسويات المرتبطة بها</p></div></div><ActivityRows compact /></section>
-    </>
+      <section className="gathering-cards">
+        {currentGatherings.map((gathering) => {
+          const closed = now >= gathering.deadlineAt
+          const remaining = Math.max(0, gathering.deadlineAt - now)
+          const days = Math.floor(remaining / 86_400_000)
+          const hours = Math.floor((remaining % 86_400_000) / 3_600_000)
+          const minutes = Math.floor((remaining % 3_600_000) / 60_000)
+          const countdown = days > 0
+            ? `${String(days).padStart(2, '0')}:${String(hours).padStart(2, '0')}`
+            : `${String(Math.floor(remaining / 3_600_000)).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+          const joined = gathering.participants.filter((person) => person.decision === 'joined')
+          const currentDecision = gathering.participants.find((person) => person.name === 'محمد السالم')?.decision
+          const displayDate = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
+            weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
+          }).format(gathering.eventAt)
+          const deadlineLabel = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
+            day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+          }).format(gathering.deadlineAt)
+
+          return (
+            <article className="panel gathering-card" key={gathering.id}>
+              <div className="gathering-card-top">
+                <span className="gathering-emoji large-emoji">{gathering.icon}</span>
+                <div className="gathering-card-actions">
+                  <span className={`gathering-status ${closed ? 'status-closed' : ''}`}>{closed ? (isEnglish ? 'In progress' : 'قيد التنفيذ') : (isEnglish ? 'RSVP open' : 'التصويت مفتوح')}</span>
+                  {gathering.createdById === currentUserId && <button className="cancel-gathering-button" onClick={() => onCancelGathering(gathering.id)}>{isEnglish ? 'Cancel gathering' : 'إلغاء الجمعة'}</button>}
+                </div>
+              </div>
+              <h2>{gathering.title}</h2>
+              <div className="gathering-meta"><span><CalendarDays size={15} /> {displayDate}</span><span><MapPin size={15} /> {gathering.location}</span></div>
+              <div className={`gathering-countdown ${remaining < 2 * 60 * 60 * 1000 && !closed ? 'countdown-urgent' : ''}`}>
+                <Clock3 size={15} />
+                <span>{closed ? (isEnglish ? 'RSVP closed' : 'انتهى وقت الرد') : (isEnglish ? 'Time to decide' : 'الوقت المتبقي للقرار')}</span>
+                <strong>{countdown}</strong>
+                {!closed && <small>{isEnglish ? `Deadline ${deadlineLabel}` : `الإغلاق ${deadlineLabel}`}</small>}
+              </div>
+              {closed && <div className="organizer-notice"><Bell size={14} /> {isEnglish ? `${joined.length} confirmed attendee${joined.length === 1 ? '' : 's'} — notify the organizer` : `تأكيد العدد النهائي: ${joined.length} مشارك · أبلغ المنشئ`}</div>}
+              <div className="attendee-block">
+                <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{joined.length} <small>/ {gathering.participants.length}</small></strong></div>
+                <div className="progress-track"><span style={{ width: `${gathering.participants.length ? (joined.length / gathering.participants.length) * 100 : 0}%` }} /></div>
+                <div className="participant-chips">{gathering.participants.filter((person) => person.decision === 'joined').map((person) => <span key={person.name} title={person.late ? (isEnglish ? 'Added after RSVP closed' : 'أُضيف بعد إغلاق التصويت') : person.name}>{person.name.slice(0, 1)}<small>{person.name}</small>{person.late && <i>+</i>}</span>)}</div>
+              </div>
+              <div className="gathering-decisions">
+                <button disabled={closed} className={currentDecision === 'joined' ? 'decision-selected' : ''} onClick={() => onVote(gathering.id, 'joined')}><Check size={15} /> {isEnglish ? 'Join' : 'انضم'}</button>
+                <button disabled={closed} className={currentDecision === 'declined' ? 'decision-selected decision-decline' : ''} onClick={() => onVote(gathering.id, 'declined')}><X size={15} /> {isEnglish ? 'Decline' : 'أعتذر'}</button>
+              </div>
+              <div className="gathering-card-footer">
+                {gathering.estimatedCost !== undefined && <span>{isEnglish ? 'Estimated / person' : 'التكلفة التقديرية للفرد'}<strong>{formatMoney(gathering.estimatedCost)} {isEnglish ? 'SAR' : 'ر.س'}</strong></span>}
+                <button className="button-outline" onClick={() => setSelectedId(selectedId === gathering.id ? null : gathering.id)}>{selectedId === gathering.id ? (isEnglish ? 'Hide details' : 'إخفاء التفاصيل') : (isEnglish ? 'Details & settlement' : 'التفاصيل والتسوية')} <ArrowUpLeft size={15} /></button>
+              </div>
+            </article>
+          )
+        })}
+        <button className="new-gathering-card" onClick={onCreate}><span><Plus size={21} /></span><strong>{isEnglish ? 'Plan your next gathering' : 'رتّبوا جمعتكم الجاية'}</strong><small>{isEnglish ? 'Set a time and invite your group' : 'اختر وقتًا ومكانًا وابدأ التصويت'}</small></button>
+      </section>
+      {selectedGathering && (
+        <section className="panel gathering-details">
+          <div className="panel-heading">
+            <div><h2>{isEnglish ? 'Expense and settlement management' : 'إدارة المصروفات والتسوية'}</h2></div>
+            <button className="button-outline" onClick={() => onNavigate('activity')}>{isEnglish ? 'Activity' : 'سجل العمليات'} <ArrowUpLeft size={15} /></button>
+          </div>
+          <div className="settlement-layout">
+            <div className="settlement-column">
+              <h3>{isEnglish ? 'Attendees' : 'المشاركون'}</h3>
+              <div className="participant-list">
+                {selectedGathering.participants.map((person) => (
+                  <div className="participant-row" key={person.name}>
+                    <span className="participant-avatar">{person.name.slice(0, 1)}</span><strong>{person.name}{person.late && <small>{isEnglish ? ' · late addition' : ' · حضور متأخر'}</small>}</strong>
+                    <span className={`participant-state participant-${person.decision}`}>{person.decision === 'joined' ? (isEnglish ? 'Joined' : 'منضم') : person.decision === 'declined' ? (isEnglish ? 'Declined' : 'اعتذر') : (isEnglish ? 'Pending' : 'بانتظار الرد')}</span>
+                  </div>
+                ))}
+              </div>
+              <form className="inline-form late-member-form" onSubmit={submitLateParticipant}>
+                <label className="modal-field"><span>{isEnglish ? 'Add someone who attended' : 'إضافة عضو حضر متأخرًا'}</span><input required value={lateName} onChange={(event) => { setLateName(event.target.value); setLateFormError('') }} placeholder={isEnglish ? 'Member name' : 'اسم العضو'} /></label>
+                <button className="button-outline" type="submit"><UserRoundPlus size={15} /> {isEnglish ? 'Add attendee' : 'إضافة مشارك'}</button>
+              </form>
+              {lateFormError && <p className="form-error" role="alert">{lateFormError}</p>}
+            </div>
+            <div className="settlement-column">
+              <h3>{isEnglish ? 'Add a manual expense' : 'تسجيل مصروف يدوي'}</h3>
+              <form className="expense-entry-form" onSubmit={submitExpense}>
+                <label className="modal-field"><span>{isEnglish ? 'Expense details' : 'تفاصيل المصروف'}</span><input required value={expenseDescription} onChange={(event) => { setExpenseDescription(event.target.value); setExpenseFormError('') }} placeholder={isEnglish ? 'e.g. Dinner' : 'مثال: الوجبة الرئيسية'} /></label>
+                <div className="expense-entry-row">
+                  <label className="modal-field"><span>{isEnglish ? 'Paid by' : 'الدافع'}</span><select required value={selectedGathering.participants.some((person) => person.name === expensePayer) ? expensePayer : selectedGathering.participants[0]?.name || ''} onChange={(event) => setExpensePayer(event.target.value)}>{selectedGathering.participants.map((person) => <option key={person.name} value={person.name}>{person.name}{person.decision === 'declined' ? (isEnglish ? ' (declined)' : ' (اعتذر)') : ''}</option>)}</select></label>
+                  <label className="modal-field"><span>{isEnglish ? 'Amount (SAR)' : 'المبلغ (ر.س)'}</span><input required min="0.01" step="0.01" type="number" value={expenseAmount} onChange={(event) => { setExpenseAmount(event.target.value); setExpenseFormError('') }} placeholder="0.00" /></label>
+                </div>
+                <button className="button-primary" type="submit" disabled={!selectedGathering.participants.length}><Plus size={15} /> {isEnglish ? 'Add expense' : 'إضافة المصروف'}</button>
+                {expenseFormError && <p className="form-error" role="alert">{expenseFormError}</p>}
+              </form>
+              <h3 className="expense-list-title">{isEnglish ? 'Recorded expenses' : 'المصروفات المسجلة'}</h3>
+              {selectedGathering.expenses.length ? <div className="manual-expense-list">{selectedGathering.expenses.map((expense) => <div key={expense.id}><span><ReceiptText size={14} />{expense.description}<small>{isEnglish ? 'Paid by' : 'دفعها'} {expense.payer}</small></span><strong>{formatMoney(expense.amount)} {isEnglish ? 'SAR' : 'ر.س'}</strong></div>)}</div> : <p className="empty-expenses">{isEnglish ? 'No expenses recorded yet.' : 'لم تُسجّل مصروفات بعد.'}</p>}
+            </div>
+          </div>
+          <div className="settlement-summary">
+            <div className="settlement-summary-heading"><span><Wallet size={17} />{isEnglish ? 'Fair-share settlement' : 'حساب نصيب الفرد العادل'}</span><strong>{isEnglish ? 'Total' : 'الإجمالي'}: {formatMoney(selectedGathering.expenses.reduce((sum, expense) => sum + expense.amount, 0))} {isEnglish ? 'SAR' : 'ر.س'}</strong></div>
+            <p>{isEnglish ? 'Total expenses ÷ confirmed attendees. Positive balance means money to receive; negative means amount owed.' : 'إجمالي المصروفات ÷ عدد المشاركين المؤكدين. الموجب مستحق للاسترداد، والسالب مبلغ مستحق على العضو.'}</p>
+            <div className="settlement-rows">
+              {settlementRows.map((row) => {
+                const participant = selectedGathering.participants.find((person) => person.name === row.name)
+                const paymentStatus = participant?.settlementStatus ?? 'pending'
+                const isOrganizer = selectedGathering.createdById === currentUserId
+                return (
+                  <div className="settlement-row" key={row.name}>
+                    <strong>{row.name}</strong>
+                    <span>{isEnglish ? 'Paid' : 'دفع'} {formatMoney(row.paid)} · {isEnglish ? 'Share' : 'حصته'} {formatMoney(row.share)}</span>
+                    <b className={row.balance >= 0 ? 'balance-positive' : 'balance-negative'}>{row.balance >= 0 ? '+' : '−'}{formatMoney(Math.abs(row.balance))} {isEnglish ? 'SAR' : 'ر.س'}</b>
+                    {row.balance < 0
+                      ? <span className={`settlement-payment-badge ${paymentStatus === 'paid' ? 'settlement-paid' : 'settlement-pending'}`}>{paymentStatus === 'paid' ? (isEnglish ? 'Paid' : 'تم الدفع') : (isEnglish ? 'Awaiting payment' : 'بانتظار السداد')}</span>
+                      : row.balance > 0
+                        ? <span className="settlement-payment-badge settlement-credit">{isEnglish ? 'To receive' : 'مستحق له'}</span>
+                        : <span className="settlement-payment-badge settlement-paid">{isEnglish ? 'Settled' : 'متوازن'}</span>}
+                    {isOrganizer && row.balance < 0 && <button className="settlement-status-toggle" onClick={() => onSetSettlementStatus(selectedGathering.id, row.name, paymentStatus === 'paid' ? 'pending' : 'paid')}>{paymentStatus === 'paid' ? (isEnglish ? 'Undo' : 'تراجع') : (isEnglish ? 'Mark paid' : 'تسجيل السداد')}</button>}
+                  </div>
+                )
+              })}
+              {!settlementRows.length && <p className="empty-expenses">{isEnglish ? 'Add confirmed attendees to calculate each share.' : 'أضف مشاركين مؤكدين لحساب نصيب كل فرد.'}</p>}
+            </div>
+            <button className="button-outline reminder-button" disabled={!settlementRows.some((row) => row.balance < 0)} onClick={onReminder}><Bell size={15} /> {isEnglish ? 'Send friendly settlement reminder' : 'إرسال تذكير ودي بالتسوية'}</button>
+            <small className="settlement-disclaimer">{isEnglish ? 'Reminders only. Members settle between themselves; no balance is charged or transferred by Nasq.' : 'للتذكير فقط؛ تتم التسوية بين الأعضاء ولا يخصم نسق أو يحوّل أي رصيد.'}</small>
+          </div>
+        </section>
+      )}
+      <section className="panel table-panel">
+        <div className="panel-heading"><div><h2>{isEnglish ? 'Recent activity' : 'آخر الجمعات'}</h2><p>{isEnglish ? 'Recent events and their settlements' : 'المناسبات السابقة والتسويات المرتبطة بها'}</p></div></div>
+        <ActivityRows compact />
+      </section>
+    </div>
   )
+}
+
+function getSettlementRows(gathering: Gathering) {
+  const joinedParticipants = gathering.participants.filter((person) => person.decision === 'joined')
+  const paidByName = new Map(gathering.participants.map((person) => [person.name, 0]))
+  for (const expense of gathering.expenses) paidByName.set(expense.payer, (paidByName.get(expense.payer) ?? 0) + expense.amount)
+  const participantsByName = new Map(gathering.participants.map((person) => [person.name, person]))
+  const settlementNames = new Set([
+    ...joinedParticipants.map((person) => person.name),
+    ...[...paidByName].filter(([, paid]) => paid > 0).map(([name]) => name),
+  ])
+  const total = gathering.expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const share = joinedParticipants.length ? total / joinedParticipants.length : 0
+  return [...settlementNames].map((name) => {
+    const paid = paidByName.get(name) ?? 0
+    const fairShare = participantsByName.get(name)?.decision === 'joined' ? share : 0
+    return {
+      name,
+      paid,
+      share: fairShare,
+      balance: paid - fairShare,
+    }
+  })
 }
 
 function PageIntro({ eyebrow, title, description, action, onAction }: { eyebrow: string; title: string; description: string; action: string; onAction: () => void }) {
