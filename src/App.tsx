@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+import { useLocation, useNavigate } from 'react-router-dom'
+import type { DocumentData } from 'firebase/firestore'
+import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -14,6 +18,7 @@ import {
   CircleAlert,
   CircleCheck,
   Clock3,
+  Copy,
   CreditCard,
   LayoutDashboard,
   Languages,
@@ -22,6 +27,7 @@ import {
   Plus,
   ReceiptText,
   Search,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -32,15 +38,19 @@ import {
 } from 'lucide-react'
 import './App.css'
 
-type View = 'overview' | 'funds' | 'gatherings' | 'split' | 'activity'
+type View = 'overview' | 'funds' | 'workspace' | 'gatherings' | 'split' | 'activity'
 type CreateKind = 'fund' | 'gathering'
-type Fund = { title: string; members: number; balance: number; icon: string; color: string; due: string }
+type Fund = { id: string; title: string; members: number; memberNames: string[]; balance: number; icon: string; color: string; due: string }
 type GatheringDecision = 'joined' | 'declined' | 'pending'
-type GatheringParticipant = { name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid' }
+type PaymentMethod = 'iban' | 'stcPay' | 'urpay' | 'phone'
+type PaymentProfile = { method: PaymentMethod; details: string }
+type GatheringParticipant = { name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid'; paymentMethod?: PaymentMethod; paymentDetails?: string }
 type GatheringExpense = { id: number; description: string; payer: string; amount: number }
+type GatheringTask = { id: number; title: string; assignedTo?: string }
 type Gathering = {
   id: string
   createdById: string
+  createdByName: string
   title: string
   date: string
   eventAt: number
@@ -53,20 +63,42 @@ type Gathering = {
   icon: string
   participants: GatheringParticipant[]
   expenses: GatheringExpense[]
+  tasks: GatheringTask[]
   estimatedCost?: number
 }
 type GatheringLanguage = 'ar' | 'en'
 const currentUserId = 'mohammed'
+const currentUserName = 'محمد السالم'
+const hasFirebaseConfig = [
+  import.meta.env.VITE_FIREBASE_API_KEY,
+  import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  import.meta.env.VITE_FIREBASE_APP_ID,
+].every(Boolean)
 type GatheringStore = {
   gatherings: Gathering[]
+  syncError: string
+  replaceCloudGatherings: (gatherings: Gathering[]) => void
+  setSyncError: (message: string) => void
   updateGatherings: (updater: (current: Gathering[]) => Gathering[]) => void
 }
-type PaymentStatus = 'paid' | 'awaiting' | 'unpaid'
-type Contribution = { name: string; amount: number; status: PaymentStatus }
-type KattahRequest = { id: number; title: string; cadence: string; total: number; due: string; contributions: Contribution[] }
-type Obligation = { id: number; title: string; amount: number; cadence: string; due: string; status: 'upcoming' | 'due' | 'awaiting' | 'paid' }
-type Reimbursement = { id: number; title: string; member: string; amount: number; receipt: string; status: 'review' | 'awaiting-receipt' | 'received' | 'objection' | 'rejected' }
-type FundActivity = { id: number; title: string; detail: string; amount: string; kind: 'pending' | 'success' | 'event'; time: string }
+type PaymentStatus = SyncedContribution['status']
+type Contribution = SyncedContribution
+type KattahRequest = SyncedKattahRequest
+type FundPaymentState = {
+  kattahRequests: KattahRequest[]
+  fundBalances: Record<string, number>
+  replaceCloudRequests: (requests: KattahRequest[]) => void
+  replaceCloudBalances: (balances: Record<string, number>) => void
+  addKattahRequest: (request: KattahRequest) => void
+  confirmContribution: (requestId: number, memberName: string) => boolean
+  approveContribution: (requestId: number, memberName: string, fallbackBalance: number) => Contribution | null
+  rejectContribution: (requestId: number, memberName: string) => boolean
+  approveAwaitingContributions: (requestId: number, fallbackBalance: number) => Contribution[]
+  adjustFundBalance: (workspaceId: string, amount: number, fallbackBalance: number) => void
+}
+type Obligation = { id: number; workspaceId: string; title: string; amount: number; cadence: string; due: string; status: 'upcoming' | 'due' | 'awaiting' | 'paid' }
+type Reimbursement = { id: number; workspaceId: string; title: string; member: string; amount: number; receipt: string; status: 'review' | 'awaiting-receipt' | 'received' | 'objection' | 'rejected' }
+type FundActivity = { id: number; workspaceId: string; title: string; detail: string; amount: string; kind: 'pending' | 'success' | 'event'; time: string }
 
 const navigation: { id: View; label: string; icon: LucideIcon }[] = [
   { id: 'overview', label: 'نظرة عامة', icon: LayoutDashboard },
@@ -83,43 +115,130 @@ const expenses = [
 ]
 
 const funds: Fund[] = [
-  { title: 'استراحة الشباب', members: 8, balance: 1260, icon: '🏡', color: 'mint', due: 'فاتورة الكهرباء · ٢٨ أكتوبر' },
-  { title: 'سكن الروضة', members: 4, balance: 840, icon: '🏠', color: 'lavender', due: 'الإيجار الشهري · ١ نوفمبر' },
-  { title: 'رحلة أبها', members: 6, balance: 2150, icon: '⛰️', color: 'peach', due: 'الحجز النهائي · ٥ نوفمبر' },
+  { id: 'youth-lounge', title: 'استراحة الشباب', members: 8, memberNames: ['أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'عبدالله فهد', 'نورة سعد', 'محمد السالم', 'فهد علي', 'ريم خالد'], balance: 1260, icon: '🏡', color: 'mint', due: 'فاتورة الكهرباء · ٢٨ أكتوبر' },
+  { id: 'rawdah-residence', title: 'سكن الروضة', members: 4, memberNames: ['محمد السالم', 'سارة محمد', 'خالد الحربي', 'أحمد العتيبي'], balance: 840, icon: '🏠', color: 'lavender', due: 'الإيجار الشهري · ١ نوفمبر' },
+  { id: 'abha-trip', title: 'رحلة أبها', members: 6, memberNames: ['محمد السالم', 'أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'نورة سعد', 'عبدالله فهد'], balance: 2150, icon: '⛰️', color: 'peach', due: 'الحجز النهائي · ٥ نوفمبر' },
 ]
 
 const initialKattahRequests: KattahRequest[] = [{
   id: 1,
+  workspaceId: 'youth-lounge',
   title: 'قطية مصروفات أكتوبر',
   cadence: 'شهرية',
   total: 2520,
   due: '٢٨ أكتوبر ٢٠٢٦',
   contributions: [
-    { name: 'أحمد العتيبي', amount: 315, status: 'paid' },
-    { name: 'سارة محمد', amount: 315, status: 'paid' },
-    { name: 'خالد الحربي', amount: 315, status: 'paid' },
-    { name: 'عبدالله فهد', amount: 315, status: 'paid' },
-    { name: 'نورة سعد', amount: 315, status: 'awaiting' },
+    { name: 'أحمد العتيبي', amount: 315, status: 'paid', confirmedAt: 1793193000000 },
+    { name: 'سارة محمد', amount: 315, status: 'paid', confirmedAt: 1793196600000 },
+    { name: 'خالد الحربي', amount: 315, status: 'paid', confirmedAt: 1793200200000 },
+    { name: 'عبدالله فهد', amount: 315, status: 'paid', confirmedAt: 1793203800000 },
+    { name: 'نورة سعد', amount: 315, status: 'awaiting', confirmedAt: 1793207400000 },
     { name: 'محمد السالم', amount: 315, status: 'unpaid' },
     { name: 'فهد علي', amount: 315, status: 'unpaid' },
     { name: 'ريم خالد', amount: 315, status: 'unpaid' },
   ],
 }]
 
+const useFundPaymentStore = create<FundPaymentState>()(persist((set) => ({
+  kattahRequests: initialKattahRequests,
+  fundBalances: {},
+  replaceCloudRequests: (requests) => set({ kattahRequests: requests }),
+  replaceCloudBalances: (balances) => set({ fundBalances: balances }),
+  addKattahRequest: (request) => set((state) => ({ kattahRequests: [request, ...state.kattahRequests] })),
+  confirmContribution: (requestId, memberName) => {
+    let updated = false
+    set((state) => ({
+      kattahRequests: state.kattahRequests.map((request) => request.id === requestId
+        ? {
+          ...request,
+          contributions: request.contributions.map((contribution) => {
+            if (contribution.name !== memberName || !['unpaid', 'rejected'].includes(contribution.status)) return contribution
+            updated = true
+            return { ...contribution, status: 'awaiting', confirmedAt: Date.now() }
+          }),
+        }
+        : request),
+    }))
+    return updated
+  },
+  approveContribution: (requestId, memberName, fallbackBalance) => {
+    let approved: Contribution | null = null
+    set((state) => {
+      const request = state.kattahRequests.find((item) => item.id === requestId)
+      const contribution = request?.contributions.find((item) => item.name === memberName && item.status === 'awaiting')
+      if (!request || !contribution) return state
+      approved = { ...contribution, status: 'paid' }
+      const approvedContribution = approved
+      return {
+        kattahRequests: state.kattahRequests.map((item) => item.id === requestId
+          ? { ...item, contributions: item.contributions.map((itemContribution) => itemContribution.name === memberName ? approvedContribution : itemContribution) }
+          : item),
+        fundBalances: {
+          ...state.fundBalances,
+          [request.workspaceId]: (state.fundBalances[request.workspaceId] ?? fallbackBalance) + contribution.amount,
+        },
+      }
+    })
+    return approved
+  },
+  rejectContribution: (requestId, memberName) => {
+    let updated = false
+    set((state) => ({
+      kattahRequests: state.kattahRequests.map((request) => request.id === requestId
+        ? {
+          ...request,
+          contributions: request.contributions.map((contribution) => {
+            if (contribution.name !== memberName || contribution.status !== 'awaiting') return contribution
+            updated = true
+            return { ...contribution, status: 'rejected', confirmedAt: null }
+          }),
+        }
+        : request),
+    }))
+    return updated
+  },
+  approveAwaitingContributions: (requestId, fallbackBalance) => {
+    let approved: Contribution[] = []
+    set((state) => {
+      const request = state.kattahRequests.find((item) => item.id === requestId)
+      if (!request) return state
+      approved = request.contributions.filter((contribution) => contribution.status === 'awaiting')
+      if (!approved.length) return state
+      const total = approved.reduce((sum, contribution) => sum + contribution.amount, 0)
+      return {
+        kattahRequests: state.kattahRequests.map((item) => item.id === requestId
+          ? { ...item, contributions: item.contributions.map((contribution) => contribution.status === 'awaiting' ? { ...contribution, status: 'paid' } : contribution) }
+          : item),
+        fundBalances: {
+          ...state.fundBalances,
+          [request.workspaceId]: (state.fundBalances[request.workspaceId] ?? fallbackBalance) + total,
+        },
+      }
+    })
+    return approved
+  },
+  adjustFundBalance: (workspaceId, amount, fallbackBalance) => set((state) => ({
+    fundBalances: {
+      ...state.fundBalances,
+      [workspaceId]: (state.fundBalances[workspaceId] ?? fallbackBalance) + amount,
+    },
+  })),
+}), { name: 'nasq-fund-payments' }))
+
 const initialObligations: Obligation[] = [
-  { id: 1, title: 'فاتورة الكهرباء', amount: 380, cadence: 'شهري', due: '٢٨ أكتوبر ٢٠٢٦', status: 'due' },
-  { id: 2, title: 'فاتورة الإنترنت', amount: 230, cadence: 'شهري', due: '١ نوفمبر ٢٠٢٦', status: 'upcoming' },
-  { id: 3, title: 'الماء والصيانة', amount: 160, cadence: 'شهري', due: '٥ نوفمبر ٢٠٢٦', status: 'upcoming' },
+  { id: 1, workspaceId: 'youth-lounge', title: 'فاتورة الكهرباء', amount: 380, cadence: 'شهري', due: '٢٨ أكتوبر ٢٠٢٦', status: 'due' },
+  { id: 2, workspaceId: 'rawdah-residence', title: 'فاتورة الإنترنت', amount: 230, cadence: 'شهري', due: '١ نوفمبر ٢٠٢٦', status: 'upcoming' },
+  { id: 3, workspaceId: 'youth-lounge', title: 'الماء والصيانة', amount: 160, cadence: 'شهري', due: '٥ نوفمبر ٢٠٢٦', status: 'upcoming' },
 ]
 
 const initialReimbursements: Reimbursement[] = [
-  { id: 1, title: 'مقاضي ومستلزمات الاستراحة', member: 'أحمد العتيبي', amount: 248, receipt: 'فاتورة_المقاضي.jpg', status: 'review' },
+  { id: 1, workspaceId: 'youth-lounge', title: 'مقاضي ومستلزمات الاستراحة', member: 'أحمد العتيبي', amount: 248, receipt: 'فاتورة_المقاضي.jpg', status: 'review' },
 ]
 
 const initialFundActivity: FundActivity[] = [
-  { id: 1, title: 'اعتماد مساهمة شهر أكتوبر', detail: 'قطية مصروفات أكتوبر · أحمد العتيبي', amount: '+ ٣١٥ ر.س', kind: 'success', time: 'اليوم، ٩:١٥ ص' },
-  { id: 2, title: 'إرسال طلب تعويض للمراجعة', detail: 'مقاضي ومستلزمات الاستراحة · أحمد العتيبي', amount: '٢٤٨ ر.س', kind: 'pending', time: 'أمس، ٦:٢٠ م' },
-  { id: 3, title: 'إضافة التزام شهري', detail: 'فاتورة الكهرباء · استراحة الشباب', amount: '٣٨٠ ر.س', kind: 'event', time: '٢٥ أكتوبر، ١١:٤٠ ص' },
+  { id: 1, workspaceId: 'youth-lounge', title: 'اعتماد مساهمة شهر أكتوبر', detail: 'قطية مصروفات أكتوبر · أحمد العتيبي', amount: '+ ٣١٥ ر.س', kind: 'success', time: 'اليوم، ٩:١٥ ص' },
+  { id: 2, workspaceId: 'youth-lounge', title: 'إرسال طلب تعويض للمراجعة', detail: 'مقاضي ومستلزمات الاستراحة · أحمد العتيبي', amount: '٢٤٨ ر.س', kind: 'pending', time: 'أمس، ٦:٢٠ م' },
+  { id: 3, workspaceId: 'youth-lounge', title: 'إضافة التزام شهري', detail: 'فاتورة الكهرباء · استراحة الشباب', amount: '٣٨٠ ر.س', kind: 'event', time: '٢٥ أكتوبر، ١١:٤٠ ص' },
 ]
 
 const createInitialGathering = (id: string, title: string, dayOffset: number, location: string, icon: string): Gathering => {
@@ -137,6 +256,7 @@ const createInitialGathering = (id: string, title: string, dayOffset: number, lo
   return {
     id,
     createdById: 'ahmed',
+    createdByName: 'أحمد العتيبي',
     title,
     date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventDate),
     eventAt: eventDate.getTime(),
@@ -149,6 +269,7 @@ const createInitialGathering = (id: string, title: string, dayOffset: number, lo
     icon,
     participants,
     expenses: [],
+    tasks: [],
   }
 }
 
@@ -157,9 +278,109 @@ const gatherings: Gathering[] = [
   createInitialGathering('gathering-2', 'مباراة الهلال والنصر', 2, 'استراحة الشباب', '⚽'),
 ]
 
-const useGatheringStore = create<GatheringStore>((set) => ({
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+const isGatheringParticipant = (value: unknown): value is GatheringParticipant =>
+  isRecord(value)
+  && typeof value.name === 'string'
+  && ['joined', 'declined', 'pending'].includes(String(value.decision))
+
+const isGatheringExpense = (value: unknown): value is GatheringExpense =>
+  isRecord(value)
+  && typeof value.id === 'number'
+  && typeof value.description === 'string'
+  && typeof value.payer === 'string'
+  && typeof value.amount === 'number'
+
+const isGatheringTask = (value: unknown): value is GatheringTask =>
+  isRecord(value)
+  && typeof value.id === 'number'
+  && typeof value.title === 'string'
+  && (value.assignedTo === undefined || typeof value.assignedTo === 'string')
+
+const decodeGathering = (id: string, value: DocumentData): Gathering => {
+  if (
+    typeof value.createdById !== 'string'
+    || typeof value.createdByName !== 'string'
+    || typeof value.title !== 'string'
+    || typeof value.date !== 'string'
+    || typeof value.eventAt !== 'number'
+    || typeof value.deadlineAt !== 'number'
+    || typeof value.location !== 'string'
+    || typeof value.attendees !== 'number'
+    || typeof value.total !== 'number'
+    || typeof value.badge !== 'string'
+    || typeof value.badgeColor !== 'string'
+    || typeof value.icon !== 'string'
+    || !Array.isArray(value.participants)
+    || !value.participants.every(isGatheringParticipant)
+    || !Array.isArray(value.expenses)
+    || !value.expenses.every(isGatheringExpense)
+    || !Array.isArray(value.tasks)
+    || !value.tasks.every(isGatheringTask)
+    || (value.estimatedCost !== undefined && typeof value.estimatedCost !== 'number')
+  ) throw new Error(`بيانات الجمعة ${id} غير صالحة.`)
+
+  return {
+    id,
+    createdById: value.createdById,
+    createdByName: value.createdByName,
+    title: value.title,
+    date: value.date,
+    eventAt: value.eventAt,
+    deadlineAt: value.deadlineAt,
+    location: value.location,
+    attendees: value.attendees,
+    total: value.total,
+    badge: value.badge,
+    badgeColor: value.badgeColor,
+    icon: value.icon,
+    participants: value.participants,
+    expenses: value.expenses,
+    tasks: value.tasks,
+    ...(typeof value.estimatedCost === 'number' ? { estimatedCost: value.estimatedCost } : {}),
+  }
+}
+
+const useGatheringStore = create<GatheringStore>((set, get) => ({
   gatherings,
-  updateGatherings: (updater) => set((state) => ({ gatherings: updater(state.gatherings) })),
+  syncError: '',
+  replaceCloudGatherings: (cloudGatherings) => set({ gatherings: cloudGatherings, syncError: '' }),
+  setSyncError: (message) => set({ syncError: message }),
+  updateGatherings: (updater) => {
+    const previous = get().gatherings
+    const next = updater(previous)
+    set({ gatherings: next })
+    if (!hasFirebaseConfig || JSON.stringify(previous) === JSON.stringify(next)) return
+    void import('./fundPaymentSync')
+      .then(({ syncGatheringChanges }) => syncGatheringChanges(previous, next))
+      .then(() => set({ syncError: '' }))
+      .catch((error: unknown) => {
+        console.error('Firestore gathering sync failed:', error)
+        set({ syncError: error instanceof Error ? error.message : String(error) })
+      })
+  },
+}))
+
+type NavigationState = {
+  activeView: View
+  selectedWorkspaceId: string | null
+  setRoute: (route: Pick<NavigationState, 'activeView' | 'selectedWorkspaceId'>) => void
+}
+
+const routeFromPath = (pathname: string): Pick<NavigationState, 'activeView' | 'selectedWorkspaceId'> => {
+  const workspaceMatch = pathname.match(/^\/workspaces\/([^/]+)\/?$/)
+  if (workspaceMatch) return { activeView: 'workspace', selectedWorkspaceId: workspaceMatch[1] }
+  if (pathname === '/workspaces' || pathname === '/workspaces/') return { activeView: 'funds', selectedWorkspaceId: null }
+  if (pathname === '/gatherings') return { activeView: 'gatherings', selectedWorkspaceId: null }
+  if (pathname === '/split') return { activeView: 'split', selectedWorkspaceId: null }
+  if (pathname === '/activity') return { activeView: 'activity', selectedWorkspaceId: null }
+  return { activeView: 'overview', selectedWorkspaceId: null }
+}
+
+const useNavigationStore = create<NavigationState>((set) => ({
+  ...routeFromPath(window.location.pathname),
+  setRoute: (route) => set(route),
 }))
 
 const activityItems = [
@@ -206,7 +427,11 @@ const deadlineOptionsFor = (dayOffset: number, eventAt: number): DeadlineOption[
 }
 
 function App() {
-  const [activeView, setActiveView] = useState<View>('overview')
+  const navigate = useNavigate()
+  const location = useLocation()
+  const activeView = useNavigationStore((state) => state.activeView)
+  const selectedWorkspaceId = useNavigationStore((state) => state.selectedWorkspaceId)
+  const setRoute = useNavigationStore((state) => state.setRoute)
   const [menuOpen, setMenuOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [amount, setAmount] = useState('240')
@@ -218,6 +443,9 @@ function App() {
   const [createdFunds, setCreatedFunds] = useState<Fund[]>([])
   const gatheringItems = useGatheringStore((state) => state.gatherings)
   const setGatheringItems = useGatheringStore((state) => state.updateGatherings)
+  const replaceCloudGatherings = useGatheringStore((state) => state.replaceCloudGatherings)
+  const setGatheringSyncError = useGatheringStore((state) => state.setSyncError)
+  const gatheringSyncError = useGatheringStore((state) => state.syncError)
   const [createName, setCreateName] = useState('')
   const [createDetail, setCreateDetail] = useState('')
   const [gatheringLocation, setGatheringLocation] = useState('')
@@ -228,20 +456,113 @@ function App() {
   const [gatheringFormError, setGatheringFormError] = useState('')
   const [gatheringsLanguage, setGatheringsLanguage] = useState<GatheringLanguage>('ar')
   const [createdMessage, setCreatedMessage] = useState('')
-  const [fundBalances, setFundBalances] = useState<Record<string, number>>({})
-  const [kattahRequests, setKattahRequests] = useState(initialKattahRequests)
+  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
+  const [paymentProfile, setPaymentProfile] = useState<PaymentProfile>({ method: 'iban', details: '' })
+  const fundBalances = useFundPaymentStore((state) => state.fundBalances)
+  const kattahRequests = useFundPaymentStore((state) => state.kattahRequests)
+  const addKattahRequest = useFundPaymentStore((state) => state.addKattahRequest)
+  const confirmContributionInStore = useFundPaymentStore((state) => state.confirmContribution)
+  const approveContributionInStore = useFundPaymentStore((state) => state.approveContribution)
+  const rejectContributionInStore = useFundPaymentStore((state) => state.rejectContribution)
+  const approveAwaitingInStore = useFundPaymentStore((state) => state.approveAwaitingContributions)
+  const adjustFundBalance = useFundPaymentStore((state) => state.adjustFundBalance)
+  const replaceCloudRequests = useFundPaymentStore((state) => state.replaceCloudRequests)
+  const replaceCloudBalances = useFundPaymentStore((state) => state.replaceCloudBalances)
+  const [firestoreStatus, setFirestoreStatus] = useState<'local' | 'connecting' | 'connected' | 'error'>(hasFirebaseConfig ? 'connecting' : 'local')
+  const [firestoreError, setFirestoreError] = useState('')
   const [obligations, setObligations] = useState(initialObligations)
   const [reimbursements, setReimbursements] = useState(initialReimbursements)
   const [fundHistory, setFundHistory] = useState(initialFundActivity)
-  const allFunds = [...funds, ...createdFunds].map((fund) => ({ ...fund, balance: fundBalances[fund.title] ?? fund.balance }))
+  const allFunds = [...funds, ...createdFunds].map((fund) => ({ ...fund, balance: fundBalances[fund.id] ?? fund.balance }))
   const allGatherings = gatheringItems
 
   const total = Number(amount) || 0
   const evenShare = people.length ? total / people.length : 0
-  const pageTitle = navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
+  const selectedWorkspace = allFunds.find((fund) => fund.id === selectedWorkspaceId)
+  const pageTitle = activeView === 'workspace'
+    ? selectedWorkspace?.title ?? 'الصندوق'
+    : navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
+
+  useEffect(() => {
+    setRoute(routeFromPath(location.pathname))
+  }, [location.pathname, setRoute])
+
+  useEffect(() => {
+    if (!hasFirebaseConfig) return
+
+    let receivedRequests = false
+    let receivedBalances = false
+    let receivedGatherings = false
+    let hasSyncError = false
+    let cancelled = false
+    let unsubscribePayments = () => {}
+    let unsubscribeGatherings = () => {}
+    const markConnected = () => {
+      if (!hasSyncError && receivedRequests && receivedBalances && receivedGatherings) {
+        setFirestoreStatus('connected')
+        setFirestoreError('')
+      }
+    }
+    void import('./fundPaymentSync').then(({ subscribeToFundPayments, subscribeToGatherings }) => {
+      if (cancelled) return
+      unsubscribePayments = subscribeToFundPayments(
+        (requests) => {
+          replaceCloudRequests(requests)
+          receivedRequests = true
+          markConnected()
+        },
+        (balances) => {
+          replaceCloudBalances(balances)
+          receivedBalances = true
+          markConnected()
+        },
+        (error) => {
+          hasSyncError = true
+          console.error('Firestore fund-payment sync failed:', error)
+          setFirestoreStatus('error')
+          setFirestoreError(error.message)
+        },
+      )
+      unsubscribeGatherings = subscribeToGatherings(
+        decodeGathering,
+        (cloudGatherings) => {
+          replaceCloudGatherings(cloudGatherings)
+          setGatheringSyncError('')
+          receivedGatherings = true
+          markConnected()
+        },
+        (error) => {
+          hasSyncError = true
+          console.error('Firestore gathering sync failed:', error)
+          setFirestoreStatus('error')
+          setFirestoreError(error.message)
+          setGatheringSyncError(error.message)
+        },
+      )
+    }).catch((error: unknown) => {
+      console.error('Firestore fund-payment sync initialization failed:', error)
+      setFirestoreStatus('error')
+      setFirestoreError(error instanceof Error ? error.message : String(error))
+    })
+    return () => {
+      cancelled = true
+      unsubscribePayments()
+      unsubscribeGatherings()
+    }
+  }, [replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setGatheringSyncError])
 
   const openView = (view: View) => {
-    setActiveView(view)
+    const path = view === 'overview' ? '/' : view === 'funds' || view === 'workspace' ? '/workspaces' : `/${view}`
+    navigate(path)
+    setRoute({ activeView: view, selectedWorkspaceId: null })
+    setMenuOpen(false)
+    setSidebarOpen(false)
+    setSplitSaved(false)
+  }
+
+  const openWorkspace = (workspaceId: string) => {
+    navigate(`/workspaces/${encodeURIComponent(workspaceId)}`)
+    setRoute({ activeView: 'workspace', selectedWorkspaceId: workspaceId })
     setMenuOpen(false)
     setSidebarOpen(false)
     setSplitSaved(false)
@@ -272,8 +593,10 @@ function App() {
 
     if (createKind === 'fund') {
       setCreatedFunds((current) => [...current, {
+        id: `workspace-${Date.now()}`,
         title: name,
         members: 1,
+        memberNames: ['محمد السالم'],
         balance: 0,
         icon: '✨',
         color: 'mint',
@@ -296,6 +619,7 @@ function App() {
       setGatheringItems((current) => [{
         id: `gathering-${Date.now()}`,
         createdById: currentUserId,
+        createdByName: currentUserName,
         title: name,
         date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventAt),
         eventAt,
@@ -308,6 +632,7 @@ function App() {
         icon: '🎉',
         participants,
         expenses: [],
+        tasks: [],
         estimatedCost: Number(gatheringEstimate) || undefined,
       }, ...current])
     }
@@ -321,7 +646,7 @@ function App() {
 
   const voteOnGathering = (gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
-    if (!gathering || gathering.deadlineAt <= Date.now()) return
+    if (!gathering || gathering.createdById === currentUserId || gathering.deadlineAt <= Date.now()) return
     setGatheringItems((current) => current.map((item) => item.id === gatheringId
       ? {
         ...item,
@@ -362,6 +687,40 @@ function App() {
       : item))
   }
 
+  const addGatheringTask = (gatheringId: string, title: string) => {
+    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const normalizedTitle = title.trim()
+    if (!gathering || gathering.createdById !== currentUserId || !normalizedTitle) return
+    setGatheringItems((current) => current.map((item) => item.id === gatheringId
+      ? { ...item, tasks: [...item.tasks, { id: Date.now(), title: normalizedTitle }] }
+      : item))
+  }
+
+  const claimGatheringTask = (gatheringId: string, taskId: number) => {
+    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const currentParticipant = gathering?.participants.find((person) => person.name === currentUserName)
+    if (!gathering || currentParticipant?.decision !== 'joined') return
+    setGatheringItems((current) => current.map((item) => item.id === gatheringId
+      ? { ...item, tasks: item.tasks.map((task) => task.id === taskId && !task.assignedTo ? { ...task, assignedTo: currentUserName } : task) }
+      : item))
+  }
+
+  const copySettlementDetails = async (gathering: Gathering, memberName: string, amountDue: number) => {
+    const participant = gathering.participants.find((person) => person.name === memberName)
+    const method = memberName === currentUserName ? paymentProfile.method : participant?.paymentMethod
+    const details = memberName === currentUserName ? paymentProfile.details.trim() : participant?.paymentDetails?.trim()
+    const methodLabel = method ? paymentMethodLabel(method) : 'غير محددة'
+    const text = `المستحق: ${memberName}\nالمبلغ: ${money(amountDue)} ر.س\nوسيلة التحويل: ${methodLabel}\nبيانات التحويل: ${details || 'غير متاحة'}`
+    try {
+      await navigator.clipboard.writeText(text)
+      showFundMessage(details
+        ? `تم نسخ بيانات تحويل ${memberName}.`
+        : `نُسخ اسم ${memberName} والمبلغ؛ لم تُسجل بيانات التحويل لهذا العضو.`)
+    } catch {
+      showFundMessage('تعذر النسخ. تحقق من صلاحية الحافظة في المتصفح.')
+    }
+  }
+
   const setGatheringSettlementStatus = (gatheringId: string, memberName: string, status: 'pending' | 'paid') => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
     if (!gathering || gathering.createdById !== currentUserId) return
@@ -382,52 +741,100 @@ function App() {
     window.setTimeout(() => setCreatedMessage(''), 3500)
   }
 
-  const addFundActivity = (title: string, detail: string, amount: string, kind: FundActivity['kind'] = 'event') => {
-    setFundHistory((current) => [{ id: Date.now(), title, detail, amount, kind, time: 'الآن' }, ...current])
-  }
-
-  const updateContribution = (requestId: number, memberName: string, status: PaymentStatus) => {
-    setKattahRequests((current) => current.map((request) => request.id === requestId
-      ? { ...request, contributions: request.contributions.map((contribution) => contribution.name === memberName ? { ...contribution, status } : contribution) }
-      : request))
+  const addFundActivity = (workspaceId: string, title: string, detail: string, amount: string, kind: FundActivity['kind'] = 'event') => {
+    setFundHistory((current) => [{ id: Date.now(), workspaceId, title, detail, amount, kind, time: 'الآن' }, ...current])
   }
 
   const confirmContribution = (requestId: number, memberName: string) => {
-    updateContribution(requestId, memberName, 'awaiting')
-    const request = kattahRequests.find((item) => item.id === requestId)
+    if (hasFirebaseConfig) {
+      void import('./fundPaymentSync').then(({ confirmSyncedContribution }) => confirmSyncedContribution(requestId, memberName)).then((confirmed) => {
+        if (!confirmed) return
+        const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+        const contribution = request?.contributions.find((item) => item.name === memberName)
+        if (request) addFundActivity(request.workspaceId, 'إشعار دفع بانتظار اعتماد المشرف', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
+        showFundMessage('تم تسجيل الدفع بانتظار المراجعة. لن يُضاف المبلغ للرصيد حتى اعتماده.')
+      }).catch((error: unknown) => {
+        console.error('Firestore contribution confirmation failed:', error)
+        showFundMessage(`تعذر تسجيل تأكيد الدفع في Firestore: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    if (!confirmContributionInStore(requestId, memberName)) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
     const contribution = request?.contributions.find((item) => item.name === memberName)
-    addFundActivity('إشعار دفع بانتظار اعتماد المشرف', `${request?.title ?? 'قطية'} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
-    showFundMessage('تم تسجيل إشعار الدفع. سيظهر المبلغ في رصيد الصندوق بعد اعتماد المشرف.')
+    if (request) addFundActivity(request.workspaceId, 'إشعار دفع بانتظار اعتماد المشرف', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
+    showFundMessage('تم تسجيل الدفع بانتظار المراجعة. لن يُضاف المبلغ للرصيد حتى اعتماده.')
   }
 
   const approveContribution = (requestId: number, memberName: string) => {
-    const request = kattahRequests.find((item) => item.id === requestId)
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
     const contribution = request?.contributions.find((item) => item.name === memberName)
     if (!request || !contribution || contribution.status !== 'awaiting') return
-    updateContribution(requestId, memberName, 'paid')
-    setFundBalances((current) => ({ ...current, [funds[0].title]: (current[funds[0].title] ?? funds[0].balance) + contribution.amount }))
-    addFundActivity('اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(contribution.amount)} ر.س`, 'success')
-    showFundMessage(`اعتمدت دفعة ${memberName} محاسبيًا. يبقى تأكيد التحويل الخارجي مسؤولية المجموعة.`)
+    const workspace = allFunds.find((fund) => fund.id === request.workspaceId)
+    if (hasFirebaseConfig) {
+      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(requestId, memberName, 'paid', workspace?.balance ?? 0)).then((amount) => {
+        if (amount === null) return
+        addFundActivity(request.workspaceId, 'اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(amount)} ر.س`, 'success')
+        showFundMessage(`تم استلام دفعة ${memberName} واعتمادها وإضافتها إلى رصيد الصندوق.`)
+      }).catch((error: unknown) => {
+        console.error('Firestore contribution approval failed:', error)
+        showFundMessage(`تعذر اعتماد الدفعة في Firestore: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    const approved = approveContributionInStore(requestId, memberName, workspace?.balance ?? 0)
+    if (!approved) return
+    addFundActivity(request.workspaceId, 'اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(contribution.amount)} ر.س`, 'success')
+    showFundMessage(`تم استلام دفعة ${memberName} واعتمادها وإضافتها إلى رصيد الصندوق.`)
+  }
+
+  const rejectContribution = (requestId: number, memberName: string) => {
+    if (hasFirebaseConfig) {
+      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(requestId, memberName, 'rejected', 0)).then((result) => {
+        if (result === null) return
+        const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+        const contribution = request?.contributions.find((item) => item.name === memberName)
+        if (request) addFundActivity(request.workspaceId, 'رفض إشعار الدفع', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
+        showFundMessage(`تم تسجيل أن حوالة ${memberName} لم تصل. يمكنه تأكيد الدفع مجددًا بعد التحويل.`)
+      }).catch((error: unknown) => {
+        console.error('Firestore contribution rejection failed:', error)
+        showFundMessage(`تعذر رفض الدفعة في Firestore: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    if (!rejectContributionInStore(requestId, memberName)) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+    const contribution = request?.contributions.find((item) => item.name === memberName)
+    if (request) addFundActivity(request.workspaceId, 'رفض إشعار الدفع', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
+    showFundMessage(`تم تسجيل أن حوالة ${memberName} لم تصل. يمكنه تأكيد الدفع مجددًا بعد التحويل.`)
   }
 
   const approveAllContributions = (requestId: number) => {
-    const request = kattahRequests.find((item) => item.id === requestId)
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
     if (!request) return
-    const pending = request.contributions.filter((contribution) => contribution.status === 'awaiting')
+    const workspace = allFunds.find((fund) => fund.id === request.workspaceId)
+    if (hasFirebaseConfig) {
+      void import('./fundPaymentSync').then(({ approveAllSyncedContributions }) => approveAllSyncedContributions(requestId, workspace?.balance ?? 0)).then((result) => {
+        if (!result.count) return
+        addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${result.count} أعضاء`, `+ ${money(result.total)} ر.س`, 'success')
+        showFundMessage(`تم استلام واعتماد ${result.count} دفعة وإضافتها إلى رصيد الصندوق.`)
+      }).catch((error: unknown) => {
+        console.error('Firestore batch contribution approval failed:', error)
+        showFundMessage(`تعذر اعتماد الدفعات في Firestore: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    const pending = approveAwaitingInStore(requestId, workspace?.balance ?? 0)
     if (!pending.length) return
     const totalApproved = pending.reduce((sum, contribution) => sum + contribution.amount, 0)
-    setKattahRequests((current) => current.map((item) => item.id === requestId
-      ? { ...item, contributions: item.contributions.map((contribution) => contribution.status === 'awaiting' ? { ...contribution, status: 'paid' } : contribution) }
-      : item))
-    setFundBalances((current) => ({ ...current, [funds[0].title]: (current[funds[0].title] ?? funds[0].balance) + totalApproved }))
-    addFundActivity('اعتماد جماعي للمساهمات', `${request.title} · ${pending.length} أعضاء`, `+ ${money(totalApproved)} ر.س`, 'success')
-    showFundMessage(`تم اعتماد ${pending.length} دفعة محاسبيًا. لا يعني ذلك التحقق من التحويل البنكي نفسه.`)
+    addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${pending.length} أعضاء`, `+ ${money(totalApproved)} ر.س`, 'success')
+    showFundMessage(`تم استلام واعتماد ${pending.length} دفعة وإضافتها إلى رصيد الصندوق.`)
   }
 
   const reportObligationPayment = (obligationId: number) => {
     const obligation = obligations.find((item) => item.id === obligationId)
     setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'awaiting' } : item))
-    if (obligation) addFundActivity('إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
+    if (obligation) addFundActivity(obligation.workspaceId, 'إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
     showFundMessage('سُجل إشعار السداد وبانتظار اعتماد المشرف.')
   }
 
@@ -435,18 +842,19 @@ function App() {
     const obligation = obligations.find((item) => item.id === obligationId)
     if (!obligation || obligation.status !== 'awaiting') return
     setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'paid' } : item))
-    setFundBalances((current) => ({ ...current, [funds[0].title]: (current[funds[0].title] ?? funds[0].balance) - obligation.amount }))
-    addFundActivity('اعتماد سداد التزام', obligation.title, `− ${money(obligation.amount)} ر.س`, 'success')
+    const workspace = allFunds.find((fund) => fund.id === obligation.workspaceId)
+    adjustFundBalance(obligation.workspaceId, -obligation.amount, workspace?.balance ?? 0)
+    addFundActivity(obligation.workspaceId, 'اعتماد سداد التزام', obligation.title, `− ${money(obligation.amount)} ر.س`, 'success')
     showFundMessage('تم اعتماد المصروف وتسجيله في السجل المحاسبي للصندوق.')
   }
 
-  const createReimbursement = (title: string, amount: number, receipt: string) => {
-    setReimbursements((current) => [{ id: Date.now(), title, member: 'محمد السالم', amount, receipt, status: 'review' }, ...current])
-    addFundActivity('طلب تعويض جديد', `${title} · محمد السالم`, `${money(amount)} ر.س`, 'pending')
+  const createReimbursement = (workspaceId: string, title: string, amount: number, receipt: string) => {
+    setReimbursements((current) => [{ id: Date.now(), workspaceId, title, member: 'محمد السالم', amount, receipt, status: 'review' }, ...current])
+    addFundActivity(workspaceId, 'طلب تعويض جديد', `${title} · محمد السالم`, `${money(amount)} ر.س`, 'pending')
     showFundMessage('أُرسل طلب التعويض للمراجعة. لن يُسجل الصرف قبل اعتماد المشرف.')
   }
 
-  const createKattahRequest = (title: string, total: number, cadence: string, due: string) => {
+  const createKattahRequest = (workspaceId: string, title: string, total: number, cadence: string, due: string) => {
     const members = ['أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'عبدالله فهد', 'نورة سعد', 'محمد السالم', 'فهد علي', 'ريم خالد']
     const share = Math.floor((total / members.length) * 100) / 100
     const contributions = members.map((name, index) => ({
@@ -454,14 +862,25 @@ function App() {
       amount: index === members.length - 1 ? Math.round((total - share * (members.length - 1)) * 100) / 100 : share,
       status: 'unpaid' as const,
     }))
-    setKattahRequests((current) => [{ id: Date.now(), title, cadence, total, due, contributions }, ...current])
-    addFundActivity('إنشاء طلب قطية', `${title} · ${cadence} · ${due}`, `${money(total)} ر.س`)
+    const request = { id: Date.now(), workspaceId, title, cadence, total, due, contributions }
+    if (hasFirebaseConfig) {
+      void import('./fundPaymentSync').then(({ createSyncedRequest }) => createSyncedRequest(request)).then(() => {
+        addFundActivity(workspaceId, 'إنشاء طلب قطية', `${title} · ${cadence} · ${due}`, `${money(total)} ر.س`)
+        showFundMessage('تم إنشاء طلب القطية ومزامنته مع أعضاء الصندوق.')
+      }).catch((error: unknown) => {
+        console.error('Firestore contribution request creation failed:', error)
+        showFundMessage(`تعذر إنشاء الطلب في Firestore: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    addKattahRequest(request)
+    addFundActivity(workspaceId, 'إنشاء طلب قطية', `${title} · ${cadence} · ${due}`, `${money(total)} ر.س`)
     showFundMessage('تم إنشاء طلب القطية وتوزيع الحصص على أعضاء الصندوق.')
   }
 
-  const createObligation = (title: string, amount: number, cadence: string, due: string) => {
-    setObligations((current) => [{ id: Date.now(), title, amount, cadence, due, status: 'upcoming' }, ...current])
-    addFundActivity('إضافة التزام للصندوق', `${title} · ${cadence} · ${due}`, `${money(amount)} ر.س`)
+  const createObligation = (workspaceId: string, title: string, amount: number, cadence: string, due: string) => {
+    setObligations((current) => [{ id: Date.now(), workspaceId, title, amount, cadence, due, status: 'upcoming' }, ...current])
+    addFundActivity(workspaceId, 'إضافة التزام للصندوق', `${title} · ${cadence} · ${due}`, `${money(amount)} ر.س`)
     showFundMessage('تمت إضافة الالتزام إلى سجل الصندوق.')
   }
 
@@ -470,11 +889,12 @@ function App() {
     if (!reimbursement || reimbursement.status !== 'review') return
     setReimbursements((current) => current.map((item) => item.id === reimbursementId ? { ...item, status } : item))
     if (status === 'awaiting-receipt') {
-      setFundBalances((current) => ({ ...current, [funds[0].title]: (current[funds[0].title] ?? funds[0].balance) - reimbursement.amount }))
-      addFundActivity('اعتماد التعويض وتسجيل الصرف', `${reimbursement.title} · ${reimbursement.member}`, `− ${money(reimbursement.amount)} ر.س`, 'success')
+      const workspace = allFunds.find((fund) => fund.id === reimbursement.workspaceId)
+      adjustFundBalance(reimbursement.workspaceId, -reimbursement.amount, workspace?.balance ?? 0)
+      addFundActivity(reimbursement.workspaceId, 'اعتماد التعويض وتسجيل الصرف', `${reimbursement.title} · ${reimbursement.member}`, `− ${money(reimbursement.amount)} ر.س`, 'success')
       showFundMessage('سُجل صرف التعويض محاسبيًا. ينتظر تأكيد المستفيد لوصول التحويل الخارجي.')
     } else if (status === 'rejected') {
-      addFundActivity('رفض طلب التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, 'pending')
+      addFundActivity(reimbursement.workspaceId, 'رفض طلب التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, 'pending')
       showFundMessage('تم رفض طلب التعويض وتسجيل القرار في السجل.')
     }
   }
@@ -484,7 +904,7 @@ function App() {
       ? { ...item, status: received ? 'received' : 'objection' }
       : item))
     const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
-    if (reimbursement) addFundActivity(received ? 'تأكيد استلام التعويض' : 'اعتراض: لم يصل التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, received ? 'success' : 'pending')
+    if (reimbursement) addFundActivity(reimbursement.workspaceId, received ? 'تأكيد استلام التعويض' : 'اعتراض: لم يصل التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, received ? 'success' : 'pending')
     showFundMessage(received ? 'تم تأكيد استلام التعويض.' : 'تم تسجيل اعتراض المستفيد على عدم الاستلام.')
   }
 
@@ -542,8 +962,8 @@ function App() {
           <span className="nav-heading">صناديقي</span>
           <button className="icon-button mini" aria-label="إنشاء صندوق" onClick={() => openView('funds')}><Plus size={16} /></button>
         </div>
-        {allFunds.slice(0, 2).map((fund) => (
-          <button key={fund.title} className="side-fund" onClick={() => openView('funds')}>
+        {allFunds.map((fund) => (
+          <button key={fund.id} className={`side-fund ${selectedWorkspaceId === fund.id ? 'active' : ''}`} aria-current={selectedWorkspaceId === fund.id ? 'page' : undefined} onClick={() => openWorkspace(fund.id)}>
             <span className={`side-fund-icon ${fund.color}`}>{fund.icon}</span>
             <span>{fund.title}</span>
             <span className="side-fund-dot" />
@@ -551,12 +971,7 @@ function App() {
         ))}
 
         <div className="sidebar-bottom">
-          <div className="trust-card">
-            <span className="trust-icon"><ShieldCheck size={18} /></span>
-            <strong>أموالك تبقى لك</strong>
-            <p>نسق ينظم حساباتكم، ولا يحتفظ بأموالكم.</p>
-          </div>
-          <button className="profile-button">
+          <button className="profile-button" onClick={() => setProfileSettingsOpen(true)} aria-label="إعدادات الحساب ووسيلة التحويل">
             <span className="profile-avatar">م</span>
             <span className="profile-copy"><strong>محمد السالم</strong><small>الحساب الشخصي</small></span>
             <ChevronDown size={16} />
@@ -593,18 +1008,31 @@ function App() {
         </header>
 
         <div className="page-content">
+          <div className={`payment-sync-notice sync-${gatheringSyncError || firestoreError ? 'error' : firestoreStatus}`} role="status">
+            {(gatheringSyncError || firestoreError) && `تعذرت مزامنة Firestore: ${gatheringSyncError || firestoreError}`}
+            {!gatheringSyncError && !firestoreError && firestoreStatus === 'connected' && `متصل بـ Firestore (${import.meta.env.VITE_FIREBASE_PROJECT_ID})؛ الجمعات والمساهمات تتزامن مباشرة.`}
+            {!gatheringSyncError && !firestoreError && firestoreStatus === 'connecting' && 'جار الاتصال بـ Firestore؛ إجراءات الدفع متوقفة حتى اكتمال المزامنة.'}
+            {!gatheringSyncError && !firestoreError && firestoreStatus === 'error' && 'تعذّر الاتصال بـ Firestore.'}
+            {!hasFirebaseConfig && 'تنبيه: Firebase غير مهيأ؛ البيانات محفوظة محلياً في هذا المتصفح فقط.'}
+          </div>
           {createdMessage && <div className="toast-message"><CircleCheck size={17} />{createdMessage}</div>}
-          {activeView === 'overview' && <Overview onNavigate={openView} funds={allFunds} gatherings={allGatherings} />}
-          {activeView === 'funds' && <FundsView
+          {activeView === 'overview' && <Overview onNavigate={openView} onOpenWorkspace={openWorkspace} funds={allFunds} gatherings={allGatherings} />}
+          {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && !selectedWorkspace
+            ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
+            : <FundsView
             onNavigate={openView}
+            onOpenWorkspace={openWorkspace}
             onCreate={() => startCreate('fund')}
             funds={allFunds}
+            workspace={activeView === 'workspace' ? selectedWorkspace : undefined}
             requests={kattahRequests}
             obligations={obligations}
             reimbursements={reimbursements}
             history={fundHistory}
+            firestoreStatus={gatheringSyncError ? 'error' : firestoreStatus}
             onConfirmContribution={confirmContribution}
             onApproveContribution={approveContribution}
+            onRejectContribution={rejectContribution}
             onApproveAllContributions={approveAllContributions}
             onReportObligationPayment={reportObligationPayment}
             onApproveObligationPayment={approveObligationPayment}
@@ -613,7 +1041,7 @@ function App() {
             onCreateObligation={createObligation}
             onDecideReimbursement={decideReimbursement}
             onConfirmReimbursementReceipt={confirmReimbursementReceipt}
-          />}
+          />)}
           {activeView === 'gatherings' && <GatheringsView
             language={gatheringsLanguage}
             onLanguageChange={setGatheringsLanguage}
@@ -624,7 +1052,10 @@ function App() {
             onCancelGathering={cancelGathering}
             onAddLateParticipant={addLateGatheringParticipant}
             onAddExpense={addGatheringExpense}
+            onAddTask={addGatheringTask}
+            onClaimTask={claimGatheringTask}
             onSetSettlementStatus={setGatheringSettlementStatus}
+            onCopySettlementDetails={copySettlementDetails}
             onDeadline={(gatheringId, attendees) => {
               const gathering = gatheringItems.find((item) => item.id === gatheringId)
               if (gathering) showFundMessage(gatheringsLanguage === 'ar'
@@ -731,11 +1162,29 @@ function App() {
           </form>
         </div>
       )}
+      {profileSettingsOpen && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileSettingsOpen(false) }}>
+          <form className="create-modal profile-settings-modal" onSubmit={(event) => {
+            event.preventDefault()
+            setProfileSettingsOpen(false)
+            showFundMessage('تم حفظ وسيلة التحويل المفضلة في هذه الجلسة.')
+          }}>
+            <button type="button" className="icon-button modal-close" aria-label="إغلاق" onClick={() => setProfileSettingsOpen(false)}><X size={18} /></button>
+            <span className="modal-icon"><CreditCard size={21} /></span>
+            <span className="date-line">إعدادات الحساب</span>
+            <h2>وسيلة التحويل المفضلة</h2>
+            <p>تظهر هذه البيانات عند نسخ مستحقاتك في تسوية الجمعة.</p>
+            <label className="modal-field"><span>وسيلة التحويل</span><select value={paymentProfile.method} onChange={(event) => setPaymentProfile((current) => ({ ...current, method: event.target.value as PaymentMethod }))}><option value="iban">IBAN</option><option value="stcPay">stc pay</option><option value="urpay">urpay</option><option value="phone">رقم الجوال</option></select></label>
+            <label className="modal-field"><span>{paymentProfile.method === 'iban' ? 'رقم الآيبان' : paymentProfile.method === 'phone' ? 'رقم الجوال' : 'رقم الحساب أو الجوال'}</span><input value={paymentProfile.details} onChange={(event) => setPaymentProfile((current) => ({ ...current, details: event.target.value }))} placeholder={paymentProfile.method === 'iban' ? 'SA...' : '05xxxxxxxx'} /></label>
+            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setProfileSettingsOpen(false)}>إلغاء</button><button type="submit" className="button-primary"><Check size={16} /> حفظ الإعدادات</button></div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
 
-function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherings }: { onNavigate: (view: View) => void; funds: Fund[]; gatherings: Gathering[] }) {
+function Overview({ onNavigate, onOpenWorkspace, funds: currentFunds, gatherings: currentGatherings }: { onNavigate: (view: View) => void; onOpenWorkspace: (workspaceId: string) => void; funds: Fund[]; gatherings: Gathering[] }) {
   return (
     <>
       <section className="welcome-row">
@@ -799,7 +1248,7 @@ function Overview({ onNavigate, funds: currentFunds, gatherings: currentGatherin
           <button className="text-button" onClick={() => onNavigate('funds')}>عرض الكل <ArrowUpLeft size={15} /></button>
         </div>
         <div className="fund-cards">
-          {currentFunds.map((fund) => <FundCard key={fund.title} fund={fund} onClick={() => onNavigate('funds')} />)}
+          {currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}
         </div>
       </section>
 
@@ -856,8 +1305,25 @@ function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
 }
 
 function PaymentBadge({ status }: { status: PaymentStatus }) {
-  const label = status === 'paid' ? 'تم الاعتماد' : status === 'awaiting' ? 'بانتظار اعتماد المشرف' : 'بانتظار الدفع'
+  const label = status === 'paid' ? 'تم الاعتماد' : status === 'awaiting' ? 'تم الدفع' : status === 'rejected' ? 'لم تُستلم الحوالة' : 'بانتظار الدفع'
   return <span className={`fund-status-badge payment-${status}`}><i />{label}</span>
+}
+
+function orderedContributions(contributions: Contribution[]) {
+  const priority = (status: PaymentStatus) => status === 'awaiting' || status === 'paid' ? 0 : status === 'unpaid' ? 1 : 2
+  return contributions
+    .map((contribution, originalIndex) => ({ contribution, originalIndex }))
+    .sort((left, right) => {
+      const priorityDifference = priority(left.contribution.status) - priority(right.contribution.status)
+      if (priorityDifference) return priorityDifference
+      if (priority(left.contribution.status) === 0) {
+        return (left.contribution.confirmedAt ?? Number.MAX_SAFE_INTEGER)
+          - (right.contribution.confirmedAt ?? Number.MAX_SAFE_INTEGER)
+          || left.contribution.name.localeCompare(right.contribution.name, 'ar')
+      }
+      return left.originalIndex - right.originalIndex
+    })
+    .map(({ contribution }) => contribution)
 }
 
 function ObligationBadge({ status }: { status: Obligation['status'] }) {
@@ -878,14 +1344,18 @@ type FundFormKind = 'kattah' | 'obligation' | 'reimbursement'
 
 function FundsView({
   onNavigate,
+  onOpenWorkspace,
   onCreate,
   funds: currentFunds,
+  workspace,
   requests,
-  obligations: currentObligations,
-  reimbursements: currentReimbursements,
+  obligations,
+  reimbursements,
   history,
+  firestoreStatus,
   onConfirmContribution,
   onApproveContribution,
+  onRejectContribution,
   onApproveAllContributions,
   onReportObligationPayment,
   onApproveObligationPayment,
@@ -896,20 +1366,24 @@ function FundsView({
   onConfirmReimbursementReceipt,
 }: {
   onNavigate: (view: View) => void
+  onOpenWorkspace: (workspaceId: string) => void
   onCreate: () => void
   funds: Fund[]
+  workspace?: Fund
   requests: KattahRequest[]
   obligations: Obligation[]
   reimbursements: Reimbursement[]
   history: FundActivity[]
+  firestoreStatus: 'local' | 'connecting' | 'connected' | 'error'
   onConfirmContribution: (requestId: number, memberName: string) => void
   onApproveContribution: (requestId: number, memberName: string) => void
+  onRejectContribution: (requestId: number, memberName: string) => void
   onApproveAllContributions: (requestId: number) => void
   onReportObligationPayment: (obligationId: number) => void
   onApproveObligationPayment: (obligationId: number) => void
-  onCreateReimbursement: (title: string, amount: number, receipt: string) => void
-  onCreateKattahRequest: (title: string, total: number, cadence: string, due: string) => void
-  onCreateObligation: (title: string, amount: number, cadence: string, due: string) => void
+  onCreateReimbursement: (workspaceId: string, title: string, amount: number, receipt: string) => void
+  onCreateKattahRequest: (workspaceId: string, title: string, total: number, cadence: string, due: string) => void
+  onCreateObligation: (workspaceId: string, title: string, amount: number, cadence: string, due: string) => void
   onDecideReimbursement: (reimbursementId: number, status: Reimbursement['status']) => void
   onConfirmReimbursementReceipt: (reimbursementId: number, received: boolean) => void
 }) {
@@ -920,8 +1394,20 @@ function FundsView({
   const [formDue, setFormDue] = useState('')
   const [receiptName, setReceiptName] = useState('')
 
-  const selectedFund = currentFunds[0]
-  const currentRequest = requests[0]
+  const selectedFund = workspace ?? currentFunds[0]
+  const workspaceId = selectedFund?.id ?? funds[0].id
+  const currentRequests = workspace ? requests.filter((request) => request.workspaceId === workspace.id) : requests
+  const currentObligations = workspace ? obligations.filter((obligation) => obligation.workspaceId === workspace.id) : obligations
+  const currentReimbursements = workspace ? reimbursements.filter((request) => request.workspaceId === workspace.id) : reimbursements
+  const currentHistory = workspace ? history.filter((item) => item.workspaceId === workspace.id) : history
+  const currentRequest = currentRequests[0]
+  const sortedContributions = currentRequest ? orderedContributions(currentRequest.contributions) : []
+  const confirmedContributions = sortedContributions.filter((item) => item.status === 'awaiting' || item.status === 'paid')
+  const confirmationRanks = new Map(confirmedContributions.map((item, index) => [item.name, index + 1]))
+  const firstConfirmer = confirmedContributions[0]?.name
+  const currentMemberPayment = currentRequest?.contributions.find((item) => item.name === currentUserName)
+  const canConfirmPayment = currentMemberPayment?.status === 'unpaid' || currentMemberPayment?.status === 'rejected'
+  const paymentActionsEnabled = firestoreStatus === 'local' || firestoreStatus === 'connected'
   const paidContributions = currentRequest?.contributions.filter((item) => item.status === 'paid') ?? []
   const awaitingContributions = currentRequest?.contributions.filter((item) => item.status === 'awaiting') ?? []
   const collectedAmount = paidContributions.reduce((sum, item) => sum + item.amount, 0)
@@ -934,9 +1420,9 @@ function FundsView({
     const amount = Number(formAmount)
     if (!title || !Number.isFinite(amount) || amount <= 0 || !formKind) return
 
-    if (formKind === 'kattah') onCreateKattahRequest(title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
-    if (formKind === 'obligation') onCreateObligation(title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
-    if (formKind === 'reimbursement') onCreateReimbursement(title, amount, receiptName || 'لم يُرفق إيصال')
+    if (formKind === 'kattah') onCreateKattahRequest(workspaceId, title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
+    if (formKind === 'obligation') onCreateObligation(workspaceId, title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
+    if (formKind === 'reimbursement') onCreateReimbursement(workspaceId, title, amount, receiptName || 'لم يُرفق إيصال')
     setFormKind(null)
     setFormTitle('')
     setFormAmount('')
@@ -946,14 +1432,19 @@ function FundsView({
 
   return (
     <>
-      <PageIntro eyebrow="إدارة المصروفات المستمرة" title="الصندوق" description="التزاماتكم وقطياتكم وتعويضاتكم في سجل واضح، من الطلب إلى التسوية." action="إنشاء صندوق" onAction={onCreate} />
+      <PageIntro
+        eyebrow={workspace ? 'تفاصيل المجموعة' : 'إدارة المصروفات المستمرة'}
+        title={workspace?.title ?? 'الصندوق'}
+        description={workspace ? 'الرصيد الحالي وأعضاء المجموعة ومصروفاتها في مكان واحد.' : 'التزاماتكم وقطياتكم وتعويضاتكم في سجل واضح، من الطلب إلى التسوية.'}
+        action={workspace ? 'إضافة مصروف' : 'إنشاء صندوق'}
+        onAction={workspace ? () => { setFormKind('reimbursement'); setFormTitle(''); setFormAmount(''); setReceiptName('') } : onCreate}
+      />
 
       <section className="balance-banner">
         <div className="balance-main">
           <div className="balance-title"><span className="balance-wallet"><Wallet size={19} /></span><span><small>الصندوق المحدد</small><strong>{selectedFund?.title ?? 'صندوق المجموعة'}</strong></span></div>
-          <span className="balance-caption">الرصيد التراكمي المسجّل</span>
+          <span className="balance-caption">{workspace ? 'الرصيد الحالي للصندوق' : 'الرصيد التراكمي المسجّل'}</span>
           <strong className="balance-amount">{money(selectedFund?.balance ?? 0)} <small>ر.س</small></strong>
-          <span className="balance-disclaimer"><ShieldCheck size={13} /> رصيد محاسبي فقط · لا يحتفظ نسق بأموالكم</span>
         </div>
         <div className="goal-progress">
           <div className="goal-heading"><span><strong>هدف التحصيل الشهري</strong><small>قطية أكتوبر · {currentRequest?.title ?? 'لا توجد قطية نشطة'}</small></span><strong>{Math.round(Math.min(collectedAmount / goal, 1) * 100)}<small>%</small></strong></div>
@@ -963,10 +1454,17 @@ function FundsView({
         </div>
       </section>
 
+      {workspace && <section className="panel workspace-members-panel">
+        <div className="panel-heading"><div><h2>أعضاء المجموعة</h2><p>{workspace.members} أعضاء</p></div><UsersRound size={19} /></div>
+        <div className="workspace-members">
+          {workspace.memberNames.map((name) => <span className="workspace-member" key={name}><span className={`person-avatar person-${name.length % 4}`}>{name.slice(0, 1)}</span>{name}</span>)}
+        </div>
+      </section>}
+
       <section className="fund-workspace-actions" aria-label="إدارة الصندوق">
         <button onClick={() => { setFormKind('kattah'); setFormTitle(''); setFormAmount(''); setFormDue('') }}><span className="action-symbol green"><UsersRound size={17} /></span><span><strong>طلب قطية</strong><small>توزيع مساهمات الأعضاء</small></span><Plus size={16} /></button>
         <button onClick={() => { setFormKind('obligation'); setFormTitle(''); setFormAmount(''); setFormDue('') }}><span className="action-symbol purple"><CalendarDays size={17} /></span><span><strong>إضافة التزام</strong><small>شهري أو سنوي أو فوري</small></span><Plus size={16} /></button>
-        <button onClick={() => { setFormKind('reimbursement'); setFormTitle(''); setFormAmount(''); setReceiptName('') }}><span className="action-symbol orange"><ReceiptText size={17} /></span><span><strong>طلب تعويض</strong><small>أرفق الإيصال للمراجعة</small></span><Plus size={16} /></button>
+        <button onClick={() => { setFormKind('reimbursement'); setFormTitle(''); setFormAmount(''); setReceiptName('') }}><span className="action-symbol orange"><ReceiptText size={17} /></span><span><strong>طلب استرداد</strong><small>إضافة مصروف وإرفاق الإيصال</small></span><Plus size={16} /></button>
       </section>
 
       {formKind && (
@@ -985,23 +1483,29 @@ function FundsView({
       )}
 
       <section className="panel kattah-panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية وتأكيد المدفوعات</h2><p>إشعار العضو بالدفع لا يضيف المبلغ للرصيد حتى يعتمد المشرف.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{awaitingContributions.length > 0 && <button className="button-primary batch-approve" onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({awaitingContributions.length})</button>}</div></div>
+        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({awaitingContributions.length})</button>}</div></div>
         {currentRequest ? (
           <>
+            <div className="contribution-primary-action">
+              {canConfirmPayment
+                ? <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(currentRequest.id, currentUserName)}><Check size={16} /> تأكيد الدفع</button>
+                : currentMemberPayment && <PaymentBadge status={currentMemberPayment.status} />}
+              {canConfirmPayment && <small>تأكيدك سيظهر في أعلى القائمة، ولا يضاف المبلغ للرصيد قبل الاعتماد.</small>}
+            </div>
             <div className="request-summary">
               <span><strong>{currentRequest.title}</strong><small>الاستحقاق {currentRequest.due}</small></span>
               <span><strong>{money(currentRequest.total)} ر.س</strong><small>الحصة المتوقعة لكل عضو</small></span>
               <span><strong>{paidContributions.length} من {currentRequest.contributions.length}</strong><small>تأكيدات معتمدة</small></span>
             </div>
             <div className="contribution-list">
-              {currentRequest.contributions.map((contribution) => (
+              {sortedContributions.map((contribution) => (
                 <div className="contribution-row" key={`${currentRequest.id}-${contribution.name}`}>
                   <span className={`person-avatar person-${contribution.name.length % 4}`}>{contribution.name.slice(0, 1)}</span>
-                  <span className="contribution-name"><strong>{contribution.name}</strong><small>{money(contribution.amount)} ر.س</small></span>
+                  <span className="contribution-name"><strong>{confirmationRanks.has(contribution.name) && `${confirmationRanks.get(contribution.name)}- `}{contribution.name}{contribution.name === firstConfirmer && <span className="first-confirmer-badge">⚡ أول المسددين</span>}</strong><small>{money(contribution.amount)} ر.س</small></span>
                   <PaymentBadge status={contribution.status} />
-                  {contribution.status === 'unpaid' && contribution.name === 'محمد السالم' && <button className="button-outline row-action" onClick={() => onConfirmContribution(currentRequest.id, contribution.name)}>تأكيد الدفع</button>}
-                  {contribution.status === 'unpaid' && contribution.name !== 'محمد السالم' && <span className="member-waiting">بانتظار العضو</span>}
-                  {contribution.status === 'awaiting' && <button className="button-outline row-action approve-action" onClick={() => onApproveContribution(currentRequest.id, contribution.name)}><Check size={13} /> اعتماد</button>}
+                  {contribution.status === 'unpaid' && <span className="member-waiting">بانتظار العضو</span>}
+                  {contribution.status === 'rejected' && contribution.name !== currentUserName && <span className="member-waiting">لم تُستلم الحوالة</span>}
+                  {contribution.status === 'awaiting' && <span className="review-actions"><button className="button-outline row-action approve-action" disabled={!paymentActionsEnabled} onClick={() => onApproveContribution(currentRequest.id, contribution.name)}><Check size={13} /> تم الاستلام</button><button className="reject-action" disabled={!paymentActionsEnabled} onClick={() => onRejectContribution(currentRequest.id, contribution.name)}>لم تصل الحوالة</button></span>}
                   {contribution.status === 'paid' && <span className="verified-mark"><CircleCheck size={15} /></span>}
                 </div>
               ))}
@@ -1043,16 +1547,15 @@ function FundsView({
       </section>
 
       <section className="panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">سجل محاسبي شفاف</span><h2>آخر العمليات</h2><p>التسجيل والاعتماد وتأكيد الاستلام حالات منفصلة.</p></div><button className="text-button" onClick={() => onNavigate('activity')}>السجل الكامل <ArrowUpLeft size={15} /></button></div>
-        <FundHistoryRows history={history} />
+        <div className="panel-heading"><div><span className="section-kicker">سجل المجموعة</span><h2>المصروفات والسجلات</h2><p>العمليات المسجلة لهذه المجموعة فقط.</p></div>{!workspace && <button className="text-button" onClick={() => onNavigate('activity')}>السجل الكامل <ArrowUpLeft size={15} /></button>}</div>
+        <FundHistoryRows history={currentHistory} />
       </section>
 
-      <section className="section-block">
+      {!workspace && <section className="section-block">
         <div className="panel-heading section-heading"><div><h2>كل الصناديق</h2><p>مساحات المصروفات المشتركة في حسابك</p></div><div className="filter-pills"><button className="selected">الكل <span>{currentFunds.length}</span></button><button>نشطة</button></div></div>
-        <div className="fund-cards fund-cards-large">{currentFunds.map((fund) => <FundCard key={fund.title} fund={fund} onClick={() => onNavigate('activity')} />)}</div>
+        <div className="fund-cards fund-cards-large">{currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}</div>
       </section>
-
-      <div className="important-note fund-important-note"><ShieldCheck size={18} /><p><strong>الرصيد المحاسبي ليس محفظة</strong><span>اعتماد المشرف يوثّق العملية في سجل المجموعة، ولا يؤكد وصول التحويل الخارجي. يتأكد الاستلام من المستفيد، ويمكنه الاعتراض.</span></p></div>
+      }
     </>
   )
 }
@@ -1067,7 +1570,10 @@ function GatheringsView({
   onCancelGathering,
   onAddLateParticipant,
   onAddExpense,
+  onAddTask,
+  onClaimTask,
   onSetSettlementStatus,
+  onCopySettlementDetails,
   onDeadline,
   onReminder,
 }: {
@@ -1080,7 +1586,10 @@ function GatheringsView({
   onCancelGathering: (gatheringId: string) => void
   onAddLateParticipant: (gatheringId: string, name: string) => void
   onAddExpense: (gatheringId: string, description: string, payer: string, amount: number) => void
+  onAddTask: (gatheringId: string, title: string) => void
+  onClaimTask: (gatheringId: string, taskId: number) => void
   onSetSettlementStatus: (gatheringId: string, memberName: string, status: 'pending' | 'paid') => void
+  onCopySettlementDetails: (gathering: Gathering, memberName: string, amountDue: number) => void
   onDeadline: (gatheringId: string, attendees: number) => void
   onReminder: () => void
 }) {
@@ -1092,6 +1601,7 @@ function GatheringsView({
   const [expensePayer, setExpensePayer] = useState('')
   const [expenseAmount, setExpenseAmount] = useState('')
   const [expenseFormError, setExpenseFormError] = useState('')
+  const [taskTitle, setTaskTitle] = useState('')
   const notifiedDeadlines = useRef(new Set<string>())
   const isEnglish = language === 'en'
   const formatMoney = (value: number) => new Intl.NumberFormat(isEnglish ? 'en-SA' : 'ar-SA', { maximumFractionDigits: 2 }).format(value)
@@ -1170,6 +1680,7 @@ function GatheringsView({
             : `${String(Math.floor(remaining / 3_600_000)).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
           const joined = gathering.participants.filter((person) => person.decision === 'joined')
           const currentDecision = gathering.participants.find((person) => person.name === 'محمد السالم')?.decision
+          const isOrganizer = gathering.createdById === currentUserId
           const displayDate = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
             weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
           }).format(gathering.eventAt)
@@ -1187,6 +1698,7 @@ function GatheringsView({
                 </div>
               </div>
               <h2>{gathering.title}</h2>
+              <div className="gathering-creator"><span aria-hidden="true">👑</span><strong>{isEnglish ? 'Organizer' : 'المنشئ'}: {gathering.createdByName}</strong></div>
               <div className="gathering-meta"><span><CalendarDays size={15} /> {displayDate}</span><span><MapPin size={15} /> {gathering.location}</span></div>
               <div className={`gathering-countdown ${remaining < 2 * 60 * 60 * 1000 && !closed ? 'countdown-urgent' : ''}`}>
                 <Clock3 size={15} />
@@ -1198,12 +1710,14 @@ function GatheringsView({
               <div className="attendee-block">
                 <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{joined.length} <small>/ {gathering.participants.length}</small></strong></div>
                 <div className="progress-track"><span style={{ width: `${gathering.participants.length ? (joined.length / gathering.participants.length) * 100 : 0}%` }} /></div>
-                <div className="participant-chips">{gathering.participants.filter((person) => person.decision === 'joined').map((person) => <span key={person.name} title={person.late ? (isEnglish ? 'Added after RSVP closed' : 'أُضيف بعد إغلاق التصويت') : person.name}>{person.name.slice(0, 1)}<small>{person.name}</small>{person.late && <i>+</i>}</span>)}</div>
+                <div className="participant-chips">{gathering.participants.filter((person) => person.decision === 'joined' || person.name === gathering.createdByName).map((person) => <span className={person.name === gathering.createdByName ? 'creator-chip' : ''} key={person.name} title={person.name === gathering.createdByName ? `${isEnglish ? 'Organizer' : 'المنشئ'}: ${person.name}` : person.late ? (isEnglish ? 'Added after RSVP closed' : 'أُضيف بعد إغلاق التصويت') : person.name}>{person.name.slice(0, 1)}<small>{person.name}</small>{person.name === gathering.createdByName && <i aria-hidden="true">👑</i>}{person.late && <i>+</i>}</span>)}</div>
               </div>
-              <div className="gathering-decisions">
-                <button disabled={closed} className={currentDecision === 'joined' ? 'decision-selected' : ''} onClick={() => onVote(gathering.id, 'joined')}><Check size={15} /> {isEnglish ? 'Join' : 'انضم'}</button>
-                <button disabled={closed} className={currentDecision === 'declined' ? 'decision-selected decision-decline' : ''} onClick={() => onVote(gathering.id, 'declined')}><X size={15} /> {isEnglish ? 'Decline' : 'أعتذر'}</button>
-              </div>
+              {isOrganizer
+                ? <div className="gathering-decisions"><button className="organizer-manage-button" onClick={() => setSelectedId(gathering.id)}><Settings2 size={15} /> {isEnglish ? 'Manage gathering' : 'إدارة الجمعة'}</button></div>
+                : <div className="gathering-decisions">
+                  <button disabled={closed} className={currentDecision === 'joined' ? 'decision-selected' : ''} onClick={() => onVote(gathering.id, 'joined')}><Check size={15} /> {isEnglish ? 'Join' : 'انضم'}</button>
+                  <button disabled={closed} className={currentDecision === 'declined' ? 'decision-selected decision-decline' : ''} onClick={() => onVote(gathering.id, 'declined')}><X size={15} /> {isEnglish ? 'Decline' : 'أعتذر'}</button>
+                </div>}
               <div className="gathering-card-footer">
                 {gathering.estimatedCost !== undefined && <span>{isEnglish ? 'Estimated / person' : 'التكلفة التقديرية للفرد'}<strong>{formatMoney(gathering.estimatedCost)} {isEnglish ? 'SAR' : 'ر.س'}</strong></span>}
                 <button className="button-outline" onClick={() => setSelectedId(selectedId === gathering.id ? null : gathering.id)}>{selectedId === gathering.id ? (isEnglish ? 'Hide details' : 'إخفاء التفاصيل') : (isEnglish ? 'Details & settlement' : 'التفاصيل والتسوية')} <ArrowUpLeft size={15} /></button>
@@ -1225,7 +1739,7 @@ function GatheringsView({
               <div className="participant-list">
                 {selectedGathering.participants.map((person) => (
                   <div className="participant-row" key={person.name}>
-                    <span className="participant-avatar">{person.name.slice(0, 1)}</span><strong>{person.name}{person.late && <small>{isEnglish ? ' · late addition' : ' · حضور متأخر'}</small>}</strong>
+                    <span className="participant-avatar">{person.name.slice(0, 1)}</span><strong>{person.name}{person.name === selectedGathering.createdByName && <span className="creator-label">👑 {isEnglish ? 'Organizer' : 'المنشئ'}</span>}{person.late && <small>{isEnglish ? ' · late addition' : ' · حضور متأخر'}</small>}</strong>
                     <span className={`participant-state participant-${person.decision}`}>{person.decision === 'joined' ? (isEnglish ? 'Joined' : 'منضم') : person.decision === 'declined' ? (isEnglish ? 'Declined' : 'اعتذر') : (isEnglish ? 'Pending' : 'بانتظار الرد')}</span>
                   </div>
                 ))}
@@ -1251,6 +1765,14 @@ function GatheringsView({
               {selectedGathering.expenses.length ? <div className="manual-expense-list">{selectedGathering.expenses.map((expense) => <div key={expense.id}><span><ReceiptText size={14} />{expense.description}<small>{isEnglish ? 'Paid by' : 'دفعها'} {expense.payer}</small></span><strong>{formatMoney(expense.amount)} {isEnglish ? 'SAR' : 'ر.س'}</strong></div>)}</div> : <p className="empty-expenses">{isEnglish ? 'No expenses recorded yet.' : 'لم تُسجّل مصروفات بعد.'}</p>}
             </div>
           </div>
+          <section className="gathering-tasks" aria-labelledby="gathering-tasks-heading">
+            <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{selectedGathering.tasks.length}</span></div>
+            {selectedGathering.createdById === currentUserId && <form className="task-entry-form" onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; onAddTask(selectedGathering.id, taskTitle); setTaskTitle('') }}><label className="modal-field"><span>{isEnglish ? 'New task' : 'مهمة جديدة'}</span><input required value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={isEnglish ? 'e.g. Bring drinks' : 'مثال: شراء المشروبات'} /></label><button className="button-outline" type="submit"><Plus size={15} /> {isEnglish ? 'Add task' : 'إضافة مهمة'}</button></form>}
+            <div className="gathering-task-list">{selectedGathering.tasks.map((task) => {
+              const currentMemberJoined = selectedGathering.participants.some((person) => person.name === currentUserName && person.decision === 'joined')
+              return <div className="gathering-task-row" key={task.id}><span className={task.assignedTo ? 'task-check task-assigned' : 'task-check'}>{task.assignedTo ? <Check size={13} /> : null}</span><strong>{task.title}</strong>{task.assignedTo ? <span className="task-assignee">{isEnglish ? `Taken by ${task.assignedTo}` : `متكفل بها: ${task.assignedTo}`}</span> : currentMemberJoined ? <button className="task-claim-button" onClick={() => onClaimTask(selectedGathering.id, task.id)}>{isEnglish ? 'I can do it' : 'أتكفل بها'}</button> : <span className="task-assignee">{isEnglish ? 'Available' : 'متاحة'}</span>}</div>
+            })}{selectedGathering.tasks.length === 0 && <p className="empty-expenses">{isEnglish ? 'No tasks added yet.' : 'لا توجد مهام مضافة بعد.'}</p>}</div>
+          </section>
           <div className="settlement-summary">
             <div className="settlement-summary-heading"><span><Wallet size={17} />{isEnglish ? 'Fair-share settlement' : 'حساب نصيب الفرد العادل'}</span><strong>{isEnglish ? 'Total' : 'الإجمالي'}: {formatMoney(selectedGathering.expenses.reduce((sum, expense) => sum + expense.amount, 0))} {isEnglish ? 'SAR' : 'ر.س'}</strong></div>
             <p>{isEnglish ? 'Total expenses ÷ confirmed attendees. Positive balance means money to receive; negative means amount owed.' : 'إجمالي المصروفات ÷ عدد المشاركين المؤكدين. الموجب مستحق للاسترداد، والسالب مبلغ مستحق على العضو.'}</p>
@@ -1269,6 +1791,7 @@ function GatheringsView({
                       : row.balance > 0
                         ? <span className="settlement-payment-badge settlement-credit">{isEnglish ? 'To receive' : 'مستحق له'}</span>
                         : <span className="settlement-payment-badge settlement-paid">{isEnglish ? 'Settled' : 'متوازن'}</span>}
+                    {row.balance > 0 && <button className="settlement-copy-button" title={isEnglish ? `Copy transfer details for ${row.name}` : `نسخ بيانات تحويل ${row.name}`} aria-label={isEnglish ? `Copy transfer details for ${row.name}` : `نسخ بيانات تحويل ${row.name}`} onClick={() => onCopySettlementDetails(selectedGathering, row.name, row.balance)}><Copy size={14} /></button>}
                     {isOrganizer && row.balance < 0 && <button className="settlement-status-toggle" onClick={() => onSetSettlementStatus(selectedGathering.id, row.name, paymentStatus === 'paid' ? 'pending' : 'paid')}>{paymentStatus === 'paid' ? (isEnglish ? 'Undo' : 'تراجع') : (isEnglish ? 'Mark paid' : 'تسجيل السداد')}</button>}
                   </div>
                 )
@@ -1309,6 +1832,10 @@ function getSettlementRows(gathering: Gathering) {
       balance: paid - fairShare,
     }
   })
+}
+
+function paymentMethodLabel(method: PaymentMethod) {
+  return method === 'iban' ? 'IBAN' : method === 'stcPay' ? 'stc pay' : method === 'urpay' ? 'urpay' : 'رقم الجوال'
 }
 
 function PageIntro({ eyebrow, title, description, action, onAction }: { eyebrow: string; title: string; description: string; action: string; onAction: () => void }) {
@@ -1421,6 +1948,7 @@ function ActivityRows({ compact = false }: { compact?: boolean }) {
 }
 
 function FundHistoryRows({ history }: { history: FundActivity[] }) {
+  if (!history.length) return <EmptyState message="لا توجد سجلات لهذه المجموعة بعد." />
   return (
     <div className="activity-rows fund-history-rows">
       {history.slice(0, 6).map((item) => (

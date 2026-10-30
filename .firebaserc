@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "nassaq-ohqtgp"
+  },
+  "targets": {
+    "nassaq-ohqtgp": {
+      "hosting": {
+        "nassaq-ohqtgp-e2b7f": [
+          "nassaq-ohqtgp-e2b7f"
+        ]
+      }
+    }
+  }
+}
