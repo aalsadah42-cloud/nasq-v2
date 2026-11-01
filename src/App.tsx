@@ -4,8 +4,10 @@ import type { LucideIcon } from 'lucide-react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { onAuthStateChanged, type User } from 'firebase/auth'
 import type { DocumentData } from 'firebase/firestore'
 import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
+import { auth } from './lib/firebase'
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -429,6 +431,8 @@ const deadlineOptionsFor = (dayOffset: number, eventAt: number): DeadlineOption[
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [authLoading, setAuthLoading] = useState(auth !== null)
   const activeView = useNavigationStore((state) => state.activeView)
   const selectedWorkspaceId = useNavigationStore((state) => state.selectedWorkspaceId)
   const setRoute = useNavigationStore((state) => state.setRoute)
@@ -482,6 +486,22 @@ function App() {
   const pageTitle = activeView === 'workspace'
     ? selectedWorkspace?.title ?? 'الصندوق'
     : navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
+
+  useEffect(() => {
+    if (!auth) return
+
+    return onAuthStateChanged(
+      auth,
+      (user) => {
+        setCurrentUser(user)
+        setAuthLoading(false)
+      },
+      (error) => {
+        console.error('Firebase authentication state listener failed:', error)
+        setAuthLoading(false)
+      },
+    )
+  }, [])
 
   useEffect(() => {
     setRoute(routeFromPath(location.pathname))
@@ -973,7 +993,7 @@ function App() {
         <div className="sidebar-bottom">
           <button className="profile-button" onClick={() => setProfileSettingsOpen(true)} aria-label="إعدادات الحساب ووسيلة التحويل">
             <span className="profile-avatar">م</span>
-            <span className="profile-copy"><strong>محمد السالم</strong><small>الحساب الشخصي</small></span>
+            <span className="profile-copy"><strong>{authLoading ? 'جارٍ تحميل الحساب...' : currentUser?.displayName || currentUser?.email || currentUserName}</strong><small>الحساب الشخصي</small></span>
             <ChevronDown size={16} />
           </button>
         </div>
