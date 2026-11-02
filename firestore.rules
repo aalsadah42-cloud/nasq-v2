@@ -1,0 +1,216 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(groupId, uid) {
+      return /databases/$(database)/documents/groups/$(groupId)/members/$(uid);
+    }
+
+    function isMember(groupId) {
+      return signedIn() && exists(memberPath(groupId, request.auth.uid));
+    }
+
+    function isManager(groupId) {
+      return isMember(groupId)
+        && get(memberPath(groupId, request.auth.uid)).data.role in ['owner', 'admin'];
+    }
+
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /inviteCodes/{code} {
+      allow get: if signedIn();
+      allow list: if signedIn() && isMember(resource.data.groupId);
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.createdBy == request.auth.uid;
+      allow update, delete: if signedIn() && isManager(resource.data.groupId);
+    }
+
+    match /groups/{groupId} {
+      allow get: if isMember(groupId);
+      allow list: if isMember(groupId);
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80;
+      allow update: if isManager(groupId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'createdBy'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && (
+          request.resource.data.createdBy == resource.data.createdBy
+          || (
+            get(memberPath(groupId, request.auth.uid)).data.role == 'owner'
+            && request.resource.data.createdBy is string
+            && getAfter(memberPath(groupId, request.resource.data.createdBy)).data.role == 'owner'
+            && getAfter(memberPath(groupId, request.auth.uid)).data.role == 'admin'
+          )
+        );
+      allow delete: if isManager(groupId)
+        && get(memberPath(groupId, request.auth.uid)).data.role == 'owner';
+
+      match /members/{memberUid} {
+        allow read: if isMember(groupId) || (signedIn() && memberUid == request.auth.uid);
+        allow create: if signedIn()
+          && request.resource.data.uid == memberUid
+          && memberUid == request.auth.uid
+          && (
+            (request.resource.data.role == 'owner'
+              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid)
+            || (request.resource.data.role == 'member'
+              && request.resource.data.joinedViaInviteCode is string
+              && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.groupId == groupId)
+          );
+        allow update: if (
+          isManager(groupId)
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'displayName'])
+          && (
+            request.resource.data.role == resource.data.role
+            || (
+              resource.data.role != 'owner'
+              && request.resource.data.role in ['member', 'admin']
+              && (
+                get(memberPath(groupId, request.auth.uid)).data.role == 'owner'
+                || request.resource.data.role == 'member'
+              )
+            )
+            || (
+              resource.data.role == 'owner'
+              && memberUid == request.auth.uid
+              && request.resource.data.role == 'admin'
+              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy != request.auth.uid
+              && getAfter(memberPath(
+                groupId,
+                getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy
+              )).data.role == 'owner'
+            )
+            || (
+              resource.data.role != 'owner'
+              && request.resource.data.role == 'owner'
+              && get(memberPath(groupId, request.auth.uid)).data.role == 'owner'
+              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == memberUid
+              && getAfter(memberPath(groupId, request.auth.uid)).data.role == 'admin'
+            )
+          )
+        ) || (
+          signedIn()
+          && memberUid == request.auth.uid
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+        );
+        allow delete: if (
+          isManager(groupId) && resource.data.role != 'owner'
+        ) || (
+          signedIn() && memberUid == request.auth.uid && resource.data.role != 'owner'
+        ) || (
+          signedIn()
+          && memberUid == request.auth.uid
+          && resource.data.role == 'owner'
+          && get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid
+          && !existsAfter(/databases/$(database)/documents/groups/$(groupId))
+        );
+      }
+
+      match /transactions/{transactionId} {
+        allow read: if isMember(groupId);
+        allow create: if isMember(groupId)
+          && request.resource.data.workspaceId == groupId;
+        allow update, delete: if isManager(groupId);
+
+        match /confirmations/{memberUid} {
+          allow read: if isMember(groupId);
+          allow create: if isMember(groupId)
+            && exists(/databases/$(database)/documents/groups/$(groupId)/transactions/$(transactionId))
+            && memberUid == request.auth.uid
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.status == 'awaiting'
+            && request.resource.data.confirmedAt == request.time;
+          allow update: if false;
+          allow delete: if isManager(groupId);
+        }
+      }
+
+      match /fund/{fundId} {
+        allow read: if isMember(groupId);
+        allow create, update, delete: if isManager(groupId);
+      }
+
+      match /obligations/{obligationId} {
+        allow read: if isMember(groupId);
+        allow create: if isManager(groupId)
+          && request.resource.data.workspaceId == groupId
+          && request.resource.data.createdByUid == request.auth.uid
+          && request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.status == 'upcoming';
+        allow update: if (
+          isManager(groupId)
+          && request.resource.data.status == 'paid'
+          && resource.data.status in ['awaiting', 'paid']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paidAt'])
+        ) || (
+          isMember(groupId)
+          && resource.data.status in ['upcoming', 'due']
+          && request.resource.data.status == 'awaiting'
+          && request.resource.data.reportedByUid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reportedByUid', 'reportedAt'])
+        );
+        allow delete: if isManager(groupId);
+      }
+
+      match /reimbursements/{reimbursementId} {
+        allow read: if isMember(groupId);
+        allow create: if isMember(groupId)
+          && request.resource.data.workspaceId == groupId
+          && request.resource.data.memberUid == request.auth.uid
+          && request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.status == 'review';
+        allow update: if (
+          isManager(groupId)
+          && (
+            (resource.data.status == 'review'
+              && request.resource.data.status in ['awaiting-receipt', 'rejected'])
+            || (resource.data.status == 'awaiting-receipt'
+              && request.resource.data.status == 'awaiting-receipt')
+          )
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'decidedAt'])
+        ) || (
+          isMember(groupId)
+          && resource.data.memberUid == request.auth.uid
+          && resource.data.status == 'awaiting-receipt'
+          && request.resource.data.status in ['received', 'objection']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'receivedAt'])
+        );
+        allow delete: if isManager(groupId);
+      }
+
+      match /gatherings/{gatheringId} {
+        allow read: if isMember(groupId);
+        allow create: if isMember(groupId)
+          && request.resource.data.createdById == request.auth.uid;
+        allow update: if isMember(groupId)
+          && request.resource.data.createdById == resource.data.createdById
+          && (
+            resource.data.createdById == request.auth.uid
+            || request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['id', 'participants', 'attendees', 'expenses', 'tasks', 'total'])
+          );
+        allow delete: if isMember(groupId) && resource.data.createdById == request.auth.uid;
+      }
+    }
+
+    match /{path=**}/members/{memberUid} {
+      allow list: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+  }
+}

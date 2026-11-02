@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
-  sendPasswordResetEmail 
+  sendPasswordResetEmail,
+  updateProfile,
 } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
@@ -47,6 +48,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
+        if (displayName.trim()) await updateProfile(user, { displayName: displayName.trim() });
 
         // إنشاء ملف المستخدم تلقائياً في Firestore عند التسجيل
         await setDoc(doc(db, 'users', user.uid), {
@@ -84,10 +86,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-100">
+      <div className="relative bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-100">
         <h2 className="text-xl font-bold text-gray-900 mb-4 text-center">
           {isReset ? 'إعادة ضبط كلمة المرور' : isSignUp ? 'إنشاء حساب جديد' : 'تسجيل الدخول'}
         </h2>
+        <button type="button" onClick={onClose} className="absolute top-4 right-4 text-gray-500" aria-label="إغلاق">×</button>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-xl text-center">

@@ -2,14 +2,15 @@ import { getApp, getApps, initializeApp } from 'firebase/app'
 import { getAuth, type Auth } from 'firebase/auth'
 import { getFirestore, type Firestore } from 'firebase/firestore'
 
-const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID
+const environment = import.meta.env ?? {}
+const projectId = environment.VITE_FIREBASE_PROJECT_ID
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (projectId ? `${projectId}.firebaseapp.com` : ''),
+  apiKey: environment.VITE_FIREBASE_API_KEY,
+  authDomain: environment.VITE_FIREBASE_AUTH_DOMAIN || (projectId ? `${projectId}.firebaseapp.com` : ''),
   projectId,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: environment.VITE_FIREBASE_APP_ID,
+  storageBucket: environment.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: environment.VITE_FIREBASE_MESSAGING_SENDER_ID,
 }
 
 export const isFirebaseConfigured = Boolean(

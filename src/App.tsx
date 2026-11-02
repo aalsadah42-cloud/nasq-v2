@@ -2,12 +2,27 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { onAuthStateChanged, type User } from 'firebase/auth'
 import type { DocumentData } from 'firebase/firestore'
 import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
 import { auth } from './lib/firebase'
+import { createGroup, getUserGroups, joinGroup, type UserGroup } from './lib/groups'
+import { AuthModal } from './components/AuthModal'
+import { GroupSettingsModal } from './components/GroupSettingsModal'
+import { ProfileSettingsModal } from './components/ProfileSettingsModal'
+import { getUserProfile, type PaymentMethod } from './lib/userProfile'
+import {
+  approveSyncedObligationPayment,
+  confirmSyncedReimbursementReceipt,
+  createSyncedObligation,
+  createSyncedReimbursement,
+  decideSyncedReimbursement,
+  reportSyncedObligationPayment,
+  subscribeToFundOperations,
+  type Obligation,
+  type Reimbursement,
+} from './lib/fundOperations'
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -21,7 +36,6 @@ import {
   CircleCheck,
   Clock3,
   Copy,
-  CreditCard,
   LayoutDashboard,
   Languages,
   MapPin,
@@ -44,9 +58,7 @@ type View = 'overview' | 'funds' | 'workspace' | 'gatherings' | 'split' | 'activ
 type CreateKind = 'fund' | 'gathering'
 type Fund = { id: string; title: string; members: number; memberNames: string[]; balance: number; icon: string; color: string; due: string }
 type GatheringDecision = 'joined' | 'declined' | 'pending'
-type PaymentMethod = 'iban' | 'stcPay' | 'urpay' | 'phone'
-type PaymentProfile = { method: PaymentMethod; details: string }
-type GatheringParticipant = { name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid'; paymentMethod?: PaymentMethod; paymentDetails?: string }
+type GatheringParticipant = { uid?: string; name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid'; paymentMethod?: PaymentMethod; paymentDetails?: string }
 type GatheringExpense = { id: number; description: string; payer: string; amount: number }
 type GatheringTask = { id: number; title: string; assignedTo?: string }
 type Gathering = {
@@ -69,8 +81,6 @@ type Gathering = {
   estimatedCost?: number
 }
 type GatheringLanguage = 'ar' | 'en'
-const currentUserId = 'mohammed'
-const currentUserName = 'محمد السالم'
 const hasFirebaseConfig = [
   import.meta.env.VITE_FIREBASE_API_KEY,
   import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -81,7 +91,7 @@ type GatheringStore = {
   syncError: string
   replaceCloudGatherings: (gatherings: Gathering[]) => void
   setSyncError: (message: string) => void
-  updateGatherings: (updater: (current: Gathering[]) => Gathering[]) => void
+  updateGatherings: (groupId: string, updater: (current: Gathering[]) => Gathering[]) => void
 }
 type PaymentStatus = SyncedContribution['status']
 type Contribution = SyncedContribution
@@ -92,14 +102,12 @@ type FundPaymentState = {
   replaceCloudRequests: (requests: KattahRequest[]) => void
   replaceCloudBalances: (balances: Record<string, number>) => void
   addKattahRequest: (request: KattahRequest) => void
-  confirmContribution: (requestId: number, memberName: string) => boolean
-  approveContribution: (requestId: number, memberName: string, fallbackBalance: number) => Contribution | null
-  rejectContribution: (requestId: number, memberName: string) => boolean
+  confirmContribution: (requestId: number, memberUid: string) => boolean
+  approveContribution: (requestId: number, memberUid: string, fallbackBalance: number) => Contribution | null
+  rejectContribution: (requestId: number, memberUid: string) => boolean
   approveAwaitingContributions: (requestId: number, fallbackBalance: number) => Contribution[]
   adjustFundBalance: (workspaceId: string, amount: number, fallbackBalance: number) => void
 }
-type Obligation = { id: number; workspaceId: string; title: string; amount: number; cadence: string; due: string; status: 'upcoming' | 'due' | 'awaiting' | 'paid' }
-type Reimbursement = { id: number; workspaceId: string; title: string; member: string; amount: number; receipt: string; status: 'review' | 'awaiting-receipt' | 'received' | 'objection' | 'rejected' }
 type FundActivity = { id: number; workspaceId: string; title: string; detail: string; amount: string; kind: 'pending' | 'success' | 'event'; time: string }
 
 const navigation: { id: View; label: string; icon: LucideIcon }[] = [
@@ -110,51 +118,20 @@ const navigation: { id: View; label: string; icon: LucideIcon }[] = [
   { id: 'activity', label: 'سجل العمليات', icon: ReceiptText },
 ]
 
-const expenses = [
-  { name: 'مقاضي الاستراحة', group: 'استراحة الشباب', person: 'أحمد العتيبي', amount: 248, time: 'منذ ساعتين', status: 'بانتظار المراجعة', color: 'orange', icon: ReceiptText },
-  { name: 'فاتورة الإنترنت', group: 'سكن الروضة', person: 'سارة محمد', amount: 230, time: 'أمس، ٨:٣٠ م', status: 'تمت التسوية', color: 'blue', icon: CreditCard },
-  { name: 'عشاء الجمعة', group: 'جمعة نهاية الأسبوع', person: 'خالد الحربي', amount: 420, time: 'أمس، ٦:١٢ م', status: 'بانتظار الدفع', color: 'purple', icon: UsersRound },
-]
-
-const funds: Fund[] = [
-  { id: 'youth-lounge', title: 'استراحة الشباب', members: 8, memberNames: ['أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'عبدالله فهد', 'نورة سعد', 'محمد السالم', 'فهد علي', 'ريم خالد'], balance: 1260, icon: '🏡', color: 'mint', due: 'فاتورة الكهرباء · ٢٨ أكتوبر' },
-  { id: 'rawdah-residence', title: 'سكن الروضة', members: 4, memberNames: ['محمد السالم', 'سارة محمد', 'خالد الحربي', 'أحمد العتيبي'], balance: 840, icon: '🏠', color: 'lavender', due: 'الإيجار الشهري · ١ نوفمبر' },
-  { id: 'abha-trip', title: 'رحلة أبها', members: 6, memberNames: ['محمد السالم', 'أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'نورة سعد', 'عبدالله فهد'], balance: 2150, icon: '⛰️', color: 'peach', due: 'الحجز النهائي · ٥ نوفمبر' },
-]
-
-const initialKattahRequests: KattahRequest[] = [{
-  id: 1,
-  workspaceId: 'youth-lounge',
-  title: 'قطية مصروفات أكتوبر',
-  cadence: 'شهرية',
-  total: 2520,
-  due: '٢٨ أكتوبر ٢٠٢٦',
-  contributions: [
-    { name: 'أحمد العتيبي', amount: 315, status: 'paid', confirmedAt: 1793193000000 },
-    { name: 'سارة محمد', amount: 315, status: 'paid', confirmedAt: 1793196600000 },
-    { name: 'خالد الحربي', amount: 315, status: 'paid', confirmedAt: 1793200200000 },
-    { name: 'عبدالله فهد', amount: 315, status: 'paid', confirmedAt: 1793203800000 },
-    { name: 'نورة سعد', amount: 315, status: 'awaiting', confirmedAt: 1793207400000 },
-    { name: 'محمد السالم', amount: 315, status: 'unpaid' },
-    { name: 'فهد علي', amount: 315, status: 'unpaid' },
-    { name: 'ريم خالد', amount: 315, status: 'unpaid' },
-  ],
-}]
-
-const useFundPaymentStore = create<FundPaymentState>()(persist((set) => ({
-  kattahRequests: initialKattahRequests,
+const useFundPaymentStore = create<FundPaymentState>()((set) => ({
+  kattahRequests: [],
   fundBalances: {},
   replaceCloudRequests: (requests) => set({ kattahRequests: requests }),
   replaceCloudBalances: (balances) => set({ fundBalances: balances }),
   addKattahRequest: (request) => set((state) => ({ kattahRequests: [request, ...state.kattahRequests] })),
-  confirmContribution: (requestId, memberName) => {
+  confirmContribution: (requestId, memberUid) => {
     let updated = false
     set((state) => ({
       kattahRequests: state.kattahRequests.map((request) => request.id === requestId
         ? {
           ...request,
           contributions: request.contributions.map((contribution) => {
-            if (contribution.name !== memberName || !['unpaid', 'rejected'].includes(contribution.status)) return contribution
+            if (contribution.uid !== memberUid || !['unpaid', 'rejected'].includes(contribution.status)) return contribution
             updated = true
             return { ...contribution, status: 'awaiting', confirmedAt: Date.now() }
           }),
@@ -163,17 +140,17 @@ const useFundPaymentStore = create<FundPaymentState>()(persist((set) => ({
     }))
     return updated
   },
-  approveContribution: (requestId, memberName, fallbackBalance) => {
+  approveContribution: (requestId, memberUid, fallbackBalance) => {
     let approved: Contribution | null = null
     set((state) => {
       const request = state.kattahRequests.find((item) => item.id === requestId)
-      const contribution = request?.contributions.find((item) => item.name === memberName && item.status === 'awaiting')
+      const contribution = request?.contributions.find((item) => item.uid === memberUid && item.status === 'awaiting')
       if (!request || !contribution) return state
       approved = { ...contribution, status: 'paid' }
       const approvedContribution = approved
       return {
         kattahRequests: state.kattahRequests.map((item) => item.id === requestId
-          ? { ...item, contributions: item.contributions.map((itemContribution) => itemContribution.name === memberName ? approvedContribution : itemContribution) }
+          ? { ...item, contributions: item.contributions.map((itemContribution) => itemContribution.uid === memberUid ? approvedContribution : itemContribution) }
           : item),
         fundBalances: {
           ...state.fundBalances,
@@ -183,14 +160,14 @@ const useFundPaymentStore = create<FundPaymentState>()(persist((set) => ({
     })
     return approved
   },
-  rejectContribution: (requestId, memberName) => {
+  rejectContribution: (requestId, memberUid) => {
     let updated = false
     set((state) => ({
       kattahRequests: state.kattahRequests.map((request) => request.id === requestId
         ? {
           ...request,
           contributions: request.contributions.map((contribution) => {
-            if (contribution.name !== memberName || contribution.status !== 'awaiting') return contribution
+            if (contribution.uid !== memberUid || contribution.status !== 'awaiting') return contribution
             updated = true
             return { ...contribution, status: 'rejected', confirmedAt: null }
           }),
@@ -225,66 +202,14 @@ const useFundPaymentStore = create<FundPaymentState>()(persist((set) => ({
       [workspaceId]: (state.fundBalances[workspaceId] ?? fallbackBalance) + amount,
     },
   })),
-}), { name: 'nasq-fund-payments' }))
-
-const initialObligations: Obligation[] = [
-  { id: 1, workspaceId: 'youth-lounge', title: 'فاتورة الكهرباء', amount: 380, cadence: 'شهري', due: '٢٨ أكتوبر ٢٠٢٦', status: 'due' },
-  { id: 2, workspaceId: 'rawdah-residence', title: 'فاتورة الإنترنت', amount: 230, cadence: 'شهري', due: '١ نوفمبر ٢٠٢٦', status: 'upcoming' },
-  { id: 3, workspaceId: 'youth-lounge', title: 'الماء والصيانة', amount: 160, cadence: 'شهري', due: '٥ نوفمبر ٢٠٢٦', status: 'upcoming' },
-]
-
-const initialReimbursements: Reimbursement[] = [
-  { id: 1, workspaceId: 'youth-lounge', title: 'مقاضي ومستلزمات الاستراحة', member: 'أحمد العتيبي', amount: 248, receipt: 'فاتورة_المقاضي.jpg', status: 'review' },
-]
-
-const initialFundActivity: FundActivity[] = [
-  { id: 1, workspaceId: 'youth-lounge', title: 'اعتماد مساهمة شهر أكتوبر', detail: 'قطية مصروفات أكتوبر · أحمد العتيبي', amount: '+ ٣١٥ ر.س', kind: 'success', time: 'اليوم، ٩:١٥ ص' },
-  { id: 2, workspaceId: 'youth-lounge', title: 'إرسال طلب تعويض للمراجعة', detail: 'مقاضي ومستلزمات الاستراحة · أحمد العتيبي', amount: '٢٤٨ ر.س', kind: 'pending', time: 'أمس، ٦:٢٠ م' },
-  { id: 3, workspaceId: 'youth-lounge', title: 'إضافة التزام شهري', detail: 'فاتورة الكهرباء · استراحة الشباب', amount: '٣٨٠ ر.س', kind: 'event', time: '٢٥ أكتوبر، ١١:٤٠ ص' },
-]
-
-const createInitialGathering = (id: string, title: string, dayOffset: number, location: string, icon: string): Gathering => {
-  const eventDate = new Date()
-  eventDate.setDate(eventDate.getDate() + dayOffset)
-  eventDate.setHours(19, 30, 0, 0)
-  const participants: GatheringParticipant[] = [
-    { name: 'محمد السالم', decision: 'joined' },
-    { name: 'أحمد العتيبي', decision: 'joined' },
-    { name: 'سارة محمد', decision: 'joined' },
-    { name: 'خالد الحربي', decision: 'joined' },
-    { name: 'نورة سعد', decision: 'pending' },
-    { name: 'عبدالله فهد', decision: 'pending' },
-  ]
-  return {
-    id,
-    createdById: 'ahmed',
-    createdByName: 'أحمد العتيبي',
-    title,
-    date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventDate),
-    eventAt: eventDate.getTime(),
-    deadlineAt: Date.now() + (dayOffset === 1 ? 2 : 30) * 60 * 60 * 1000,
-    location,
-    attendees: participants.filter((person) => person.decision === 'joined').length,
-    total: participants.length,
-    badge: 'التصويت مفتوح',
-    badgeColor: 'green',
-    icon,
-    participants,
-    expenses: [],
-    tasks: [],
-  }
-}
-
-const gatherings: Gathering[] = [
-  createInitialGathering('gathering-1', 'عشاء نهاية الأسبوع', 1, 'اختروا المطعم', '🍽️'),
-  createInitialGathering('gathering-2', 'مباراة الهلال والنصر', 2, 'استراحة الشباب', '⚽'),
-]
+}))
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 const isGatheringParticipant = (value: unknown): value is GatheringParticipant =>
   isRecord(value)
   && typeof value.name === 'string'
+  && (value.uid === undefined || typeof value.uid === 'string')
   && ['joined', 'declined', 'pending'].includes(String(value.decision))
 
 const isGatheringExpense = (value: unknown): value is GatheringExpense =>
@@ -344,23 +269,13 @@ const decodeGathering = (id: string, value: DocumentData): Gathering => {
   }
 }
 
-const useGatheringStore = create<GatheringStore>((set, get) => ({
-  gatherings,
+const useGatheringStore = create<GatheringStore>((set) => ({
+  gatherings: [],
   syncError: '',
   replaceCloudGatherings: (cloudGatherings) => set({ gatherings: cloudGatherings, syncError: '' }),
   setSyncError: (message) => set({ syncError: message }),
-  updateGatherings: (updater) => {
-    const previous = get().gatherings
-    const next = updater(previous)
-    set({ gatherings: next })
-    if (!hasFirebaseConfig || JSON.stringify(previous) === JSON.stringify(next)) return
-    void import('./fundPaymentSync')
-      .then(({ syncGatheringChanges }) => syncGatheringChanges(previous, next))
-      .then(() => set({ syncError: '' }))
-      .catch((error: unknown) => {
-        console.error('Firestore gathering sync failed:', error)
-        set({ syncError: error instanceof Error ? error.message : String(error) })
-      })
+  updateGatherings: (_groupId, updater) => {
+    set((state) => ({ gatherings: updater(state.gatherings) }))
   },
 }))
 
@@ -384,12 +299,6 @@ const useNavigationStore = create<NavigationState>((set) => ({
   ...routeFromPath(window.location.pathname),
   setRoute: (route) => set(route),
 }))
-
-const activityItems = [
-  { title: 'أحمد أضاف مصروفًا جديدًا', detail: 'مقاضي الاستراحة · استراحة الشباب', amount: '+ ٢٤٨ ر.س', time: 'منذ ساعتين', kind: 'pending' },
-  { title: 'تم تأكيد استلام التعويض', detail: 'فاتورة الإنترنت · سكن الروضة', amount: '٢٣٠ ر.س', time: 'أمس، ٨:٣٠ م', kind: 'success' },
-  { title: 'تم إنشاء جمعة جديدة', detail: 'عشاء نهاية الأسبوع', amount: '٧ مشاركين', time: 'أمس، ٦:١٢ م', kind: 'event' },
-]
 
 const money = (value: number) =>
   new Intl.NumberFormat('ar-SA', { maximumFractionDigits: 2 }).format(value)
@@ -433,6 +342,13 @@ function App() {
   const location = useLocation()
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(auth !== null)
+  const [userGroups, setUserGroups] = useState<UserGroup[]>([])
+  const [groupsLoading, setGroupsLoading] = useState(auth !== null)
+  const [groupModalOpen, setGroupModalOpen] = useState(() => Boolean(new URLSearchParams(window.location.search).get('invite')))
+  const [joinCode, setJoinCode] = useState(() => new URLSearchParams(window.location.search).get('invite')?.toUpperCase() ?? '')
+  const [createdInviteCode, setCreatedInviteCode] = useState('')
+  const [groupActionError, setGroupActionError] = useState('')
+  const [showAuthModal, setShowAuthModal] = useState(false)
   const activeView = useNavigationStore((state) => state.activeView)
   const selectedWorkspaceId = useNavigationStore((state) => state.selectedWorkspaceId)
   const setRoute = useNavigationStore((state) => state.setRoute)
@@ -444,14 +360,12 @@ function App() {
   const [shares, setShares] = useState(['60', '60', '60', '60'])
   const [splitSaved, setSplitSaved] = useState(false)
   const [createKind, setCreateKind] = useState<CreateKind | null>(null)
-  const [createdFunds, setCreatedFunds] = useState<Fund[]>([])
   const gatheringItems = useGatheringStore((state) => state.gatherings)
   const setGatheringItems = useGatheringStore((state) => state.updateGatherings)
   const replaceCloudGatherings = useGatheringStore((state) => state.replaceCloudGatherings)
   const setGatheringSyncError = useGatheringStore((state) => state.setSyncError)
   const gatheringSyncError = useGatheringStore((state) => state.syncError)
   const [createName, setCreateName] = useState('')
-  const [createDetail, setCreateDetail] = useState('')
   const [gatheringLocation, setGatheringLocation] = useState('')
   const [gatheringDayOffset, setGatheringDayOffset] = useState(1)
   const [gatheringTime, setGatheringTime] = useState('19:30')
@@ -461,7 +375,11 @@ function App() {
   const [gatheringsLanguage, setGatheringsLanguage] = useState<GatheringLanguage>('ar')
   const [createdMessage, setCreatedMessage] = useState('')
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
-  const [paymentProfile, setPaymentProfile] = useState<PaymentProfile>({ method: 'iban', details: '' })
+  const [groupSettingsOpen, setGroupSettingsOpen] = useState(false)
+  const [profileDisplayName, setProfileDisplayName] = useState('')
+  const [profilePhotoURL, setProfilePhotoURL] = useState('')
+  const currentUserId = currentUser?.uid ?? ''
+  const currentUserName = profileDisplayName.trim() || currentUser?.displayName?.trim() || currentUser?.email || 'عضو'
   const fundBalances = useFundPaymentStore((state) => state.fundBalances)
   const kattahRequests = useFundPaymentStore((state) => state.kattahRequests)
   const addKattahRequest = useFundPaymentStore((state) => state.addKattahRequest)
@@ -474,18 +392,30 @@ function App() {
   const replaceCloudBalances = useFundPaymentStore((state) => state.replaceCloudBalances)
   const [firestoreStatus, setFirestoreStatus] = useState<'local' | 'connecting' | 'connected' | 'error'>(hasFirebaseConfig ? 'connecting' : 'local')
   const [firestoreError, setFirestoreError] = useState('')
-  const [obligations, setObligations] = useState(initialObligations)
-  const [reimbursements, setReimbursements] = useState(initialReimbursements)
-  const [fundHistory, setFundHistory] = useState(initialFundActivity)
-  const allFunds = [...funds, ...createdFunds].map((fund) => ({ ...fund, balance: fundBalances[fund.id] ?? fund.balance }))
+  const [obligations, setObligations] = useState<Obligation[]>([])
+  const [reimbursements, setReimbursements] = useState<Reimbursement[]>([])
+  const [fundHistory, setFundHistory] = useState<FundActivity[]>([])
+  const allFunds: Fund[] = userGroups.map((group, index) => ({
+    id: group.id,
+    title: group.name,
+    members: group.memberNames.length,
+    memberNames: group.memberNames,
+    balance: fundBalances[group.id] ?? group.balance,
+    icon: '👥',
+    color: ['mint', 'lavender', 'peach'][index % 3],
+    due: 'لا توجد التزامات قادمة',
+  }))
   const allGatherings = gatheringItems
 
   const total = Number(amount) || 0
   const evenShare = people.length ? total / people.length : 0
   const selectedWorkspace = allFunds.find((fund) => fund.id === selectedWorkspaceId)
+  const canManageGroup = userGroups.find((group) => group.id === selectedWorkspaceId)?.role === 'owner'
+    || userGroups.find((group) => group.id === selectedWorkspaceId)?.role === 'admin'
   const pageTitle = activeView === 'workspace'
     ? selectedWorkspace?.title ?? 'الصندوق'
     : navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
+  const selectedGroup = userGroups.find((group) => group.id === selectedWorkspaceId)
 
   useEffect(() => {
     if (!auth) return
@@ -494,6 +424,8 @@ function App() {
       auth,
       (user) => {
         setCurrentUser(user)
+        setProfileDisplayName(user?.displayName ?? '')
+        setProfilePhotoURL(user?.photoURL ?? '')
         setAuthLoading(false)
       },
       (error) => {
@@ -504,21 +436,85 @@ function App() {
   }, [])
 
   useEffect(() => {
-    setRoute(routeFromPath(location.pathname))
+    if (authLoading) return
+    let cancelled = false
+
+    if (!currentUser) {
+      setUserGroups([])
+      setGroupsLoading(false)
+      replaceCloudRequests([])
+      replaceCloudBalances({})
+      replaceCloudGatherings([])
+      return
+    }
+
+    setUserGroups([])
+    replaceCloudRequests([])
+    replaceCloudBalances({})
+    replaceCloudGatherings([])
+    setGroupsLoading(true)
+    void getUserGroups(currentUser.uid).then((groups) => {
+      if (cancelled) return
+      setUserGroups(groups)
+      const route = useNavigationStore.getState()
+      const selectedGroupExists = groups.some((group) => group.id === route.selectedWorkspaceId)
+      const selectedGroupId = selectedGroupExists ? route.selectedWorkspaceId : groups[0]?.id ?? null
+      if (selectedGroupId !== route.selectedWorkspaceId) {
+        setRoute({ activeView: route.activeView, selectedWorkspaceId: selectedGroupId })
+        if (route.activeView === 'workspace' && selectedGroupId) {
+          navigate(`/workspaces/${encodeURIComponent(selectedGroupId)}`)
+        }
+      }
+      setFirestoreError('')
+    }).catch((error: unknown) => {
+      if (cancelled) return
+      console.error('Firebase group loading failed:', error)
+      setFirestoreStatus('error')
+      setFirestoreError(error instanceof Error ? error.message : String(error))
+    }).finally(() => {
+      if (!cancelled) setGroupsLoading(false)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authLoading, currentUser, navigate, replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setRoute])
+
+  useEffect(() => {
+    const route = routeFromPath(location.pathname)
+    setRoute({
+      ...route,
+      selectedWorkspaceId: route.selectedWorkspaceId ?? useNavigationStore.getState().selectedWorkspaceId,
+    })
   }, [location.pathname, setRoute])
 
   useEffect(() => {
-    if (!hasFirebaseConfig) return
+    const group = userGroups.find((item) => item.id === selectedWorkspaceId)
+    replaceCloudRequests([])
+    replaceCloudBalances({})
+    replaceCloudGatherings([])
+    setObligations([])
+    setReimbursements([])
+    setFundHistory([])
+    setGatheringSyncError('')
+    setFirestoreError('')
+    if (!hasFirebaseConfig || !currentUser || !group || !selectedWorkspaceId) {
+      setFirestoreStatus('local')
+      return
+    }
 
     let receivedRequests = false
     let receivedBalances = false
     let receivedGatherings = false
+    let receivedOperations = false
     let hasSyncError = false
     let cancelled = false
     let unsubscribePayments = () => {}
     let unsubscribeGatherings = () => {}
+    let unsubscribeOperations = () => {}
+    setFirestoreStatus('connecting')
     const markConnected = () => {
-      if (!hasSyncError && receivedRequests && receivedBalances && receivedGatherings) {
+      if (!hasSyncError && receivedRequests && receivedBalances && receivedGatherings && receivedOperations) {
         setFirestoreStatus('connected')
         setFirestoreError('')
       }
@@ -526,6 +522,7 @@ function App() {
     void import('./fundPaymentSync').then(({ subscribeToFundPayments, subscribeToGatherings }) => {
       if (cancelled) return
       unsubscribePayments = subscribeToFundPayments(
+        selectedWorkspaceId,
         (requests) => {
           replaceCloudRequests(requests)
           receivedRequests = true
@@ -544,6 +541,7 @@ function App() {
         },
       )
       unsubscribeGatherings = subscribeToGatherings(
+        selectedWorkspaceId,
         decodeGathering,
         (cloudGatherings) => {
           replaceCloudGatherings(cloudGatherings)
@@ -559,6 +557,19 @@ function App() {
           setGatheringSyncError(error.message)
         },
       )
+      unsubscribeOperations = subscribeToFundOperations(
+        selectedWorkspaceId,
+        setObligations,
+        setReimbursements,
+        (error) => {
+          hasSyncError = true
+          console.error('Firestore fund-operation sync failed:', error)
+          setFirestoreStatus('error')
+          setFirestoreError(error.message)
+        },
+      )
+      receivedOperations = true
+      markConnected()
     }).catch((error: unknown) => {
       console.error('Firestore fund-payment sync initialization failed:', error)
       setFirestoreStatus('error')
@@ -568,16 +579,32 @@ function App() {
       cancelled = true
       unsubscribePayments()
       unsubscribeGatherings()
+      unsubscribeOperations()
     }
-  }, [replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setGatheringSyncError])
+  }, [currentUser, selectedWorkspaceId, userGroups, replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setGatheringSyncError])
 
   const openView = (view: View) => {
     const path = view === 'overview' ? '/' : view === 'funds' || view === 'workspace' ? '/workspaces' : `/${view}`
     navigate(path)
-    setRoute({ activeView: view, selectedWorkspaceId: null })
+    setRoute({ activeView: view, selectedWorkspaceId: useNavigationStore.getState().selectedWorkspaceId })
     setMenuOpen(false)
     setSidebarOpen(false)
     setSplitSaved(false)
+  }
+
+  const refreshUserGroups = async () => {
+    if (!currentUser) return
+    const groups = await getUserGroups(currentUser.uid)
+    setUserGroups(groups)
+    const route = useNavigationStore.getState()
+    const selectedExists = groups.some((group) => group.id === route.selectedWorkspaceId)
+    if (selectedExists) return
+    const nextGroupId = groups[0]?.id ?? null
+    const nextView = route.activeView === 'workspace' && !nextGroupId ? 'funds' : route.activeView
+    setRoute({ activeView: nextView, selectedWorkspaceId: nextGroupId })
+    if (route.activeView === 'workspace') {
+      navigate(nextGroupId ? `/workspaces/${encodeURIComponent(nextGroupId)}` : '/workspaces')
+    }
   }
 
   const openWorkspace = (workspaceId: string) => {
@@ -588,10 +615,49 @@ function App() {
     setSplitSaved(false)
   }
 
+  const submitGroupJoin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setGroupActionError('')
+    if (!currentUser) {
+      setShowAuthModal(true)
+      return
+    }
+
+    try {
+      const joinedGroup = await joinGroup(joinCode, currentUser)
+      setUserGroups(await getUserGroups(currentUser.uid))
+      setGroupModalOpen(false)
+      setJoinCode('')
+      setCreatedInviteCode('')
+      openWorkspace(joinedGroup.id)
+      setCreatedMessage(`انضممت إلى مجموعة «${joinedGroup.name}».`)
+    } catch (error) {
+      console.error('Joining a Firebase group failed:', error)
+      setGroupActionError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const copyInviteCode = async () => {
+    try {
+      await navigator.clipboard.writeText(createdInviteCode)
+      setCreatedMessage('تم نسخ رمز الدعوة.')
+    } catch (error) {
+      console.error('Copying the group invite code failed:', error)
+      setGroupActionError('تعذر نسخ الرمز. يمكنك تحديده ونسخه يدويًا.')
+    }
+  }
+
   const startCreate = (kind: CreateKind) => {
+    if (!currentUser) {
+      setShowAuthModal(true)
+      return
+    }
+    if (kind === 'gathering' && !selectedWorkspaceId) {
+      setCreatedMessage('أنشئ مجموعة أو انضم إلى واحدة قبل إضافة جمعة.')
+      return
+    }
     setCreateKind(kind)
     setCreateName('')
-    setCreateDetail('')
     setGatheringLocation('')
     setGatheringDayOffset(1)
     setGatheringTime('19:30')
@@ -602,7 +668,38 @@ function App() {
     setMenuOpen(false)
   }
 
-  const saveNewItem = (event: FormEvent<HTMLFormElement>) => {
+  const createGathering = async (groupId: string, gathering: Gathering): Promise<void> => {
+    if (!hasFirebaseConfig) {
+      setGatheringItems(groupId, (current) => [gathering, ...current])
+      return
+    }
+    const { createSyncedGathering } = await import('./fundPaymentSync')
+    await createSyncedGathering(groupId, gathering)
+    setGatheringSyncError('')
+  }
+
+  const mutateGathering = (groupId: string, gatheringId: string, update: (gathering: Gathering) => Gathering | null) => {
+    if (!groupId) return
+    if (!hasFirebaseConfig) {
+      setGatheringItems(groupId, (current) => current.flatMap((gathering) => {
+        if (gathering.id !== gatheringId) return [gathering]
+        const next = update(gathering)
+        return next ? [next] : []
+      }))
+      return
+    }
+    void import('./fundPaymentSync').then(({ mutateSyncedGathering }) =>
+      mutateSyncedGathering(groupId, gatheringId, decodeGathering, update))
+      .then(() => setGatheringSyncError(''))
+      .catch((error: unknown) => {
+        console.error('Updating a Firestore gathering failed:', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setGatheringSyncError(message)
+        showFundMessage(`تعذر تحديث الجمعة: ${message}`)
+      })
+  }
+
+  const saveNewItem = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const name = createName.trim()
     if (!createKind) return
@@ -612,17 +709,31 @@ function App() {
     }
 
     if (createKind === 'fund') {
-      setCreatedFunds((current) => [...current, {
-        id: `workspace-${Date.now()}`,
-        title: name,
-        members: 1,
-        memberNames: ['محمد السالم'],
-        balance: 0,
-        icon: '✨',
-        color: 'mint',
-        due: createDetail.trim() || 'لا توجد التزامات قادمة',
-      }])
+      if (!currentUser) {
+        setCreateKind(null)
+        setShowAuthModal(true)
+        return
+      }
+      try {
+        const newGroup = await createGroup(name, currentUser)
+        setUserGroups((groups) => [...groups, newGroup])
+        setCreateKind(null)
+        openWorkspace(newGroup.id)
+        setGroupActionError('')
+        setCreatedInviteCode(newGroup.inviteCode)
+        setGroupModalOpen(true)
+        setCreatedMessage(`تم إنشاء المجموعة «${name}».`)
+      } catch (error) {
+        console.error('Creating a Firebase group failed:', error)
+        setFirestoreError(error instanceof Error ? error.message : String(error))
+        setFirestoreStatus('error')
+      }
+      return
     } else {
+      if (!currentUser || !selectedWorkspaceId) {
+        setGatheringFormError('سجّل الدخول واختر مجموعة قبل إنشاء جمعة.')
+        return
+      }
       const eventAt = eventTimeFor(gatheringDayOffset, gatheringTime)
       const options = deadlineOptionsFor(gatheringDayOffset, eventAt)
       const selectedDeadline = options.find((option) => option.id === gatheringDeadline) ?? options[0]
@@ -630,130 +741,150 @@ function App() {
         setGatheringFormError(gatheringsLanguage === 'ar' ? 'اختر وقتًا مستقبليًا وموعد إغلاق يسبقه.' : 'Choose a future time and an RSVP deadline before it.')
         return
       }
-      const participants: GatheringParticipant[] = [
-        { name: 'محمد السالم', decision: 'joined' },
-        { name: 'أحمد العتيبي', decision: 'pending' },
-        { name: 'سارة محمد', decision: 'pending' },
-        { name: 'خالد الحربي', decision: 'pending' },
-      ]
-      setGatheringItems((current) => [{
-        id: `gathering-${Date.now()}`,
-        createdById: currentUserId,
-        createdByName: currentUserName,
-        title: name,
-        date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventAt),
-        eventAt,
-        deadlineAt: selectedDeadline.at,
-        location: gatheringLocation.trim() || 'لم يُحدّد الموقع بعد',
-        attendees: 1,
-        total: participants.length,
-        badge: 'التصويت مفتوح',
-        badgeColor: 'green',
-        icon: '🎉',
-        participants,
-        expenses: [],
-        tasks: [],
-        estimatedCost: Number(gatheringEstimate) || undefined,
-      }, ...current])
+      const group = userGroups.find((item) => item.id === selectedWorkspaceId)
+      const participants: GatheringParticipant[] = (group?.members ?? []).map((member) => ({
+        uid: member.uid,
+        name: member.displayName,
+        decision: member.uid === currentUser.uid ? 'joined' : 'pending',
+      }))
+      try {
+        await createGathering(selectedWorkspaceId, {
+          id: `gathering-${Date.now()}`,
+          createdById: currentUser.uid,
+          createdByName: currentUserName,
+          title: name,
+          date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventAt),
+          eventAt,
+          deadlineAt: selectedDeadline.at,
+          location: gatheringLocation.trim() || 'لم يُحدّد الموقع بعد',
+          attendees: 1,
+          total: participants.length,
+          badge: 'التصويت مفتوح',
+          badgeColor: 'green',
+          icon: '🎉',
+          participants,
+          expenses: [],
+          tasks: [],
+          estimatedCost: Number(gatheringEstimate) || undefined,
+        })
+      } catch (error) {
+        console.error('Creating a Firestore gathering failed:', error)
+        const message = error instanceof Error ? error.message : String(error)
+        setGatheringSyncError(message)
+        setGatheringFormError(`تعذر إنشاء الجمعة: ${message}`)
+        return
+      }
     }
 
     setCreateKind(null)
     setCreatedMessage(createKind === 'gathering' && gatheringsLanguage === 'en'
       ? `Gathering "${name}" was added to your workspace.`
-      : `تمت إضافة ${createKind === 'fund' ? 'الصندوق' : 'الجمعة'} «${name}» إلى مساحة عملك.`)
+      : `تمت إضافة الجمعة «${name}» إلى المجموعة.`)
     window.setTimeout(() => setCreatedMessage(''), 3500)
   }
 
   const voteOnGathering = (gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
-    if (!gathering || gathering.createdById === currentUserId || gathering.deadlineAt <= Date.now()) return
-    setGatheringItems((current) => current.map((item) => item.id === gatheringId
-      ? {
+    if (!currentUser || !gathering || gathering.createdById === currentUserId || gathering.deadlineAt <= Date.now()) return
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+      if (item.createdById === currentUserId || item.deadlineAt <= Date.now()) return item
+      const participants = item.participants.map((person) => ({
+        ...person,
+        ...(person.uid === currentUserId ? { decision } : {}),
+        settlementStatus: undefined,
+      }))
+      return {
         ...item,
-        participants: item.participants.map((person) => ({
-          ...person,
-          ...(person.name === 'محمد السالم' ? { decision } : {}),
-          settlementStatus: undefined,
-        })),
-        attendees: item.participants.filter((person) => person.name === 'محمد السالم' ? decision === 'joined' : person.decision === 'joined').length,
+        participants,
+        attendees: participants.filter((person) => person.decision === 'joined').length,
       }
-      : item))
+    })
   }
 
   const cancelGathering = (gatheringId: string) => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
-    if (!gathering || gathering.createdById !== currentUserId) return
-    setGatheringItems((current) => current.filter((item) => item.id !== gatheringId))
+    if (!currentUser || !gathering || gathering.createdById !== currentUserId) return
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, () => null)
   }
 
   const addLateGatheringParticipant = (gatheringId: string, name: string) => {
     const normalizedName = name.trim()
     if (!normalizedName) return
-    setGatheringItems((current) => current.map((item) => {
-      if (item.id !== gatheringId || item.participants.some((person) => person.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return item
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+      if (item.participants.some((person) => person.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return item
       const participants = [...item.participants.map((person) => ({ ...person, settlementStatus: undefined })), { name: normalizedName, decision: 'joined' as const, late: true }]
       return { ...item, participants, attendees: participants.filter((person) => person.decision === 'joined').length, total: participants.length }
-    }))
+    })
   }
 
   const addGatheringExpense = (gatheringId: string, description: string, payer: string, amount: number) => {
     if (!description.trim() || !payer || !Number.isFinite(amount) || amount <= 0) return
-    setGatheringItems((current) => current.map((item) => item.id === gatheringId
-      ? {
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => ({
         ...item,
-        expenses: [...item.expenses, { id: Date.now(), description: description.trim(), payer, amount }],
+        expenses: [...item.expenses, {
+          id: Math.max(Date.now(), ...item.expenses.map((expense) => expense.id + 1)),
+          description: description.trim(),
+          payer,
+          amount,
+        }],
         participants: item.participants.map((person) => ({ ...person, settlementStatus: undefined })),
-      }
-      : item))
+      }))
   }
 
   const addGatheringTask = (gatheringId: string, title: string) => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
     const normalizedTitle = title.trim()
-    if (!gathering || gathering.createdById !== currentUserId || !normalizedTitle) return
-    setGatheringItems((current) => current.map((item) => item.id === gatheringId
-      ? { ...item, tasks: [...item.tasks, { id: Date.now(), title: normalizedTitle }] }
-      : item))
+    if (!currentUser || !gathering || gathering.createdById !== currentUserId || !normalizedTitle) return
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+      if (item.createdById !== currentUserId) return item
+      return { ...item, tasks: [...item.tasks, { id: Math.max(Date.now(), ...item.tasks.map((task) => task.id + 1)), title: normalizedTitle }] }
+    })
   }
 
   const claimGatheringTask = (gatheringId: string, taskId: number) => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
-    const currentParticipant = gathering?.participants.find((person) => person.name === currentUserName)
+    const currentParticipant = gathering?.participants.find((person) => person.uid === currentUserId)
     if (!gathering || currentParticipant?.decision !== 'joined') return
-    setGatheringItems((current) => current.map((item) => item.id === gatheringId
-      ? { ...item, tasks: item.tasks.map((task) => task.id === taskId && !task.assignedTo ? { ...task, assignedTo: currentUserName } : task) }
-      : item))
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+      if (item.participants.find((person) => person.uid === currentUserId)?.decision !== 'joined') return item
+      return { ...item, tasks: item.tasks.map((task) => task.id === taskId && !task.assignedTo ? { ...task, assignedTo: currentUserName } : task) }
+    })
   }
 
   const copySettlementDetails = async (gathering: Gathering, memberName: string, amountDue: number) => {
     const participant = gathering.participants.find((person) => person.name === memberName)
-    const method = memberName === currentUserName ? paymentProfile.method : participant?.paymentMethod
-    const details = memberName === currentUserName ? paymentProfile.details.trim() : participant?.paymentDetails?.trim()
-    const methodLabel = method ? paymentMethodLabel(method) : 'غير محددة'
-    const text = `المستحق: ${memberName}\nالمبلغ: ${money(amountDue)} ر.س\nوسيلة التحويل: ${methodLabel}\nبيانات التحويل: ${details || 'غير متاحة'}`
+    const isCurrentMember = participant?.uid === currentUserId
     try {
+      const profile = isCurrentMember && currentUser ? await getUserProfile(currentUser) : null
+      const method = profile?.paymentMethod ?? participant?.paymentMethod
+      const details = profile?.paymentDetails.trim() ?? participant?.paymentDetails?.trim() ?? ''
+      const methodLabel = method ? paymentMethodLabel(method) : 'غير محددة'
+      const text = `المستحق: ${memberName}\nالمبلغ: ${money(amountDue)} ر.س\nوسيلة التحويل: ${methodLabel}\nبيانات التحويل: ${details || 'غير متاحة'}`
       await navigator.clipboard.writeText(text)
       showFundMessage(details
         ? `تم نسخ بيانات تحويل ${memberName}.`
         : `نُسخ اسم ${memberName} والمبلغ؛ لم تُسجل بيانات التحويل لهذا العضو.`)
-    } catch {
-      showFundMessage('تعذر النسخ. تحقق من صلاحية الحافظة في المتصفح.')
+    } catch (error) {
+      console.error('Loading or copying settlement details failed:', error)
+      showFundMessage(error instanceof Error ? `تعذر نسخ بيانات التسوية: ${error.message}` : 'تعذر النسخ. تحقق من صلاحية الحافظة في المتصفح.')
     }
   }
 
   const setGatheringSettlementStatus = (gatheringId: string, memberName: string, status: 'pending' | 'paid') => {
     const gathering = gatheringItems.find((item) => item.id === gatheringId)
-    if (!gathering || gathering.createdById !== currentUserId) return
+    if (!currentUser || !gathering || gathering.createdById !== currentUserId) return
     const row = getSettlementRows(gathering).find((item) => item.name === memberName)
     if (!row || row.balance >= 0) return
-    setGatheringItems((current) => current.map((item) => item.id === gatheringId
-      ? {
+    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+      const latestRow = getSettlementRows(item).find((settlement) => settlement.name === memberName)
+      if (!latestRow || latestRow.balance >= 0) return item
+      return {
         ...item,
         participants: item.participants.map((person) => person.name === memberName
           ? { ...person, settlementStatus: status }
           : person),
       }
-      : item))
+    })
   }
 
   const showFundMessage = (message: string) => {
@@ -765,12 +896,14 @@ function App() {
     setFundHistory((current) => [{ id: Date.now(), workspaceId, title, detail, amount, kind, time: 'الآن' }, ...current])
   }
 
-  const confirmContribution = (requestId: number, memberName: string) => {
+  const confirmContribution = (requestId: number, memberUid: string) => {
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+    const contribution = request?.contributions.find((item) => item.uid === memberUid)
+    if (!request || !contribution) return
+    const memberName = contribution.name
     if (hasFirebaseConfig) {
-      void import('./fundPaymentSync').then(({ confirmSyncedContribution }) => confirmSyncedContribution(requestId, memberName)).then((confirmed) => {
+      void import('./fundPaymentSync').then(({ confirmSyncedContribution }) => confirmSyncedContribution(request.workspaceId, requestId, memberUid)).then((confirmed) => {
         if (!confirmed) return
-        const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
-        const contribution = request?.contributions.find((item) => item.name === memberName)
         if (request) addFundActivity(request.workspaceId, 'إشعار دفع بانتظار اعتماد المشرف', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
         showFundMessage('تم تسجيل الدفع بانتظار المراجعة. لن يُضاف المبلغ للرصيد حتى اعتماده.')
       }).catch((error: unknown) => {
@@ -779,20 +912,20 @@ function App() {
       })
       return
     }
-    if (!confirmContributionInStore(requestId, memberName)) return
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
-    const contribution = request?.contributions.find((item) => item.name === memberName)
+    if (!confirmContributionInStore(requestId, memberUid)) return
     if (request) addFundActivity(request.workspaceId, 'إشعار دفع بانتظار اعتماد المشرف', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
     showFundMessage('تم تسجيل الدفع بانتظار المراجعة. لن يُضاف المبلغ للرصيد حتى اعتماده.')
   }
 
-  const approveContribution = (requestId: number, memberName: string) => {
+  const approveContribution = (requestId: number, memberUid: string) => {
+    if (!canManageGroup) return
     const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
-    const contribution = request?.contributions.find((item) => item.name === memberName)
+    const contribution = request?.contributions.find((item) => item.uid === memberUid)
     if (!request || !contribution || contribution.status !== 'awaiting') return
+    const memberName = contribution.name
     const workspace = allFunds.find((fund) => fund.id === request.workspaceId)
     if (hasFirebaseConfig) {
-      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(requestId, memberName, 'paid', workspace?.balance ?? 0)).then((amount) => {
+      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(request.workspaceId, requestId, memberUid, 'paid', workspace?.balance ?? 0)).then((amount) => {
         if (amount === null) return
         addFundActivity(request.workspaceId, 'اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(amount)} ر.س`, 'success')
         showFundMessage(`تم استلام دفعة ${memberName} واعتمادها وإضافتها إلى رصيد الصندوق.`)
@@ -802,18 +935,21 @@ function App() {
       })
       return
     }
-    const approved = approveContributionInStore(requestId, memberName, workspace?.balance ?? 0)
+    const approved = approveContributionInStore(requestId, memberUid, workspace?.balance ?? 0)
     if (!approved) return
     addFundActivity(request.workspaceId, 'اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(contribution.amount)} ر.س`, 'success')
     showFundMessage(`تم استلام دفعة ${memberName} واعتمادها وإضافتها إلى رصيد الصندوق.`)
   }
 
-  const rejectContribution = (requestId: number, memberName: string) => {
+  const rejectContribution = (requestId: number, memberUid: string) => {
+    if (!canManageGroup) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+    const contribution = request?.contributions.find((item) => item.uid === memberUid)
+    if (!request || !contribution) return
+    const memberName = contribution.name
     if (hasFirebaseConfig) {
-      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(requestId, memberName, 'rejected', 0)).then((result) => {
+      void import('./fundPaymentSync').then(({ decideSyncedContribution }) => decideSyncedContribution(request.workspaceId, requestId, memberUid, 'rejected', 0)).then((result) => {
         if (result === null) return
-        const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
-        const contribution = request?.contributions.find((item) => item.name === memberName)
         if (request) addFundActivity(request.workspaceId, 'رفض إشعار الدفع', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
         showFundMessage(`تم تسجيل أن حوالة ${memberName} لم تصل. يمكنه تأكيد الدفع مجددًا بعد التحويل.`)
       }).catch((error: unknown) => {
@@ -822,19 +958,18 @@ function App() {
       })
       return
     }
-    if (!rejectContributionInStore(requestId, memberName)) return
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
-    const contribution = request?.contributions.find((item) => item.name === memberName)
+    if (!rejectContributionInStore(requestId, memberUid)) return
     if (request) addFundActivity(request.workspaceId, 'رفض إشعار الدفع', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
     showFundMessage(`تم تسجيل أن حوالة ${memberName} لم تصل. يمكنه تأكيد الدفع مجددًا بعد التحويل.`)
   }
 
   const approveAllContributions = (requestId: number) => {
+    if (!canManageGroup) return
     const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
     if (!request) return
     const workspace = allFunds.find((fund) => fund.id === request.workspaceId)
     if (hasFirebaseConfig) {
-      void import('./fundPaymentSync').then(({ approveAllSyncedContributions }) => approveAllSyncedContributions(requestId, workspace?.balance ?? 0)).then((result) => {
+      void import('./fundPaymentSync').then(({ approveAllSyncedContributions }) => approveAllSyncedContributions(request.workspaceId, requestId, workspace?.balance ?? 0)).then((result) => {
         if (!result.count) return
         addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${result.count} أعضاء`, `+ ${money(result.total)} ر.س`, 'success')
         showFundMessage(`تم استلام واعتماد ${result.count} دفعة وإضافتها إلى رصيد الصندوق.`)
@@ -853,14 +988,38 @@ function App() {
 
   const reportObligationPayment = (obligationId: number) => {
     const obligation = obligations.find((item) => item.id === obligationId)
+    if (!obligation) return
+    if (hasFirebaseConfig) {
+      if (!currentUser) return
+      void reportSyncedObligationPayment(obligation.workspaceId, obligationId, currentUser.uid).then((updated) => {
+        if (!updated) return
+        addFundActivity(obligation.workspaceId, 'إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
+        showFundMessage('سُجل إشعار السداد وبانتظار اعتماد المشرف.')
+      }).catch((error: unknown) => {
+        console.error('Reporting an obligation payment failed:', error)
+        showFundMessage(`تعذر تسجيل إشعار السداد: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'awaiting' } : item))
-    if (obligation) addFundActivity(obligation.workspaceId, 'إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
+    addFundActivity(obligation.workspaceId, 'إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
     showFundMessage('سُجل إشعار السداد وبانتظار اعتماد المشرف.')
   }
 
   const approveObligationPayment = (obligationId: number) => {
     const obligation = obligations.find((item) => item.id === obligationId)
     if (!obligation || obligation.status !== 'awaiting') return
+    if (hasFirebaseConfig) {
+      void approveSyncedObligationPayment(obligation.workspaceId, obligationId).then((updated) => {
+        if (!updated) return
+        addFundActivity(obligation.workspaceId, 'اعتماد سداد التزام', obligation.title, `− ${money(obligation.amount)} ر.س`, 'success')
+        showFundMessage('تم اعتماد المصروف وتسجيله في السجل المحاسبي للصندوق.')
+      }).catch((error: unknown) => {
+        console.error('Approving an obligation payment failed:', error)
+        showFundMessage(`تعذر اعتماد المصروف: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'paid' } : item))
     const workspace = allFunds.find((fund) => fund.id === obligation.workspaceId)
     adjustFundBalance(obligation.workspaceId, -obligation.amount, workspace?.balance ?? 0)
@@ -869,22 +1028,48 @@ function App() {
   }
 
   const createReimbursement = (workspaceId: string, title: string, amount: number, receipt: string) => {
-    setReimbursements((current) => [{ id: Date.now(), workspaceId, title, member: 'محمد السالم', amount, receipt, status: 'review' }, ...current])
-    addFundActivity(workspaceId, 'طلب تعويض جديد', `${title} · محمد السالم`, `${money(amount)} ر.س`, 'pending')
+    if (hasFirebaseConfig) {
+      if (!currentUser) return
+      const reimbursement: Reimbursement = {
+        id: Date.now(),
+        workspaceId,
+        title,
+        member: currentUserName,
+        memberUid: currentUser.uid,
+        amount,
+        receipt,
+        status: 'review',
+      }
+      void createSyncedReimbursement(workspaceId, reimbursement).then(() => {
+        addFundActivity(workspaceId, 'طلب تعويض جديد', `${title} · ${currentUserName}`, `${money(amount)} ر.س`, 'pending')
+        showFundMessage('أُرسل طلب التعويض للمراجعة. لن يُسجل الصرف قبل اعتماد المشرف.')
+      }).catch((error: unknown) => {
+        console.error('Creating a reimbursement failed:', error)
+        showFundMessage(`تعذر إرسال طلب التعويض: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
+    setReimbursements((current) => [{ id: Date.now(), workspaceId, title, member: currentUserName, memberUid: currentUserId, amount, receipt, status: 'review' }, ...current])
+    addFundActivity(workspaceId, 'طلب تعويض جديد', `${title} · ${currentUserName}`, `${money(amount)} ر.س`, 'pending')
     showFundMessage('أُرسل طلب التعويض للمراجعة. لن يُسجل الصرف قبل اعتماد المشرف.')
   }
 
   const createKattahRequest = (workspaceId: string, title: string, total: number, cadence: string, due: string) => {
-    const members = ['أحمد العتيبي', 'سارة محمد', 'خالد الحربي', 'عبدالله فهد', 'نورة سعد', 'محمد السالم', 'فهد علي', 'ريم خالد']
+    const members = userGroups.find((group) => group.id === workspaceId)?.members ?? []
+    if (!members.length) {
+      showFundMessage('لا يوجد أعضاء في المجموعة لتوزيع المساهمة عليهم.')
+      return
+    }
     const share = Math.floor((total / members.length) * 100) / 100
-    const contributions = members.map((name, index) => ({
-      name,
+    const contributions = members.map((member, index) => ({
+      uid: member.uid,
+      name: member.displayName,
       amount: index === members.length - 1 ? Math.round((total - share * (members.length - 1)) * 100) / 100 : share,
       status: 'unpaid' as const,
     }))
     const request = { id: Date.now(), workspaceId, title, cadence, total, due, contributions }
     if (hasFirebaseConfig) {
-      void import('./fundPaymentSync').then(({ createSyncedRequest }) => createSyncedRequest(request)).then(() => {
+      void import('./fundPaymentSync').then(({ createSyncedRequest }) => createSyncedRequest(workspaceId, request)).then(() => {
         addFundActivity(workspaceId, 'إنشاء طلب قطية', `${title} · ${cadence} · ${due}`, `${money(total)} ر.س`)
         showFundMessage('تم إنشاء طلب القطية ومزامنته مع أعضاء الصندوق.')
       }).catch((error: unknown) => {
@@ -899,6 +1084,18 @@ function App() {
   }
 
   const createObligation = (workspaceId: string, title: string, amount: number, cadence: string, due: string) => {
+    if (hasFirebaseConfig) {
+      if (!currentUser) return
+      const obligation = { id: Date.now(), workspaceId, title, amount, cadence, due, createdByUid: currentUser.uid }
+      void createSyncedObligation(workspaceId, obligation).then(() => {
+        addFundActivity(workspaceId, 'إضافة التزام للصندوق', `${title} · ${cadence} · ${due}`, `${money(amount)} ر.س`)
+        showFundMessage('تمت إضافة الالتزام إلى سجل الصندوق.')
+      }).catch((error: unknown) => {
+        console.error('Creating a fund obligation failed:', error)
+        showFundMessage(`تعذرت إضافة الالتزام: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     setObligations((current) => [{ id: Date.now(), workspaceId, title, amount, cadence, due, status: 'upcoming' }, ...current])
     addFundActivity(workspaceId, 'إضافة التزام للصندوق', `${title} · ${cadence} · ${due}`, `${money(amount)} ر.س`)
     showFundMessage('تمت إضافة الالتزام إلى سجل الصندوق.')
@@ -907,6 +1104,23 @@ function App() {
   const decideReimbursement = (reimbursementId: number, status: Reimbursement['status']) => {
     const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
     if (!reimbursement || reimbursement.status !== 'review') return
+    if (hasFirebaseConfig) {
+      if (status !== 'awaiting-receipt' && status !== 'rejected') return
+      void decideSyncedReimbursement(reimbursement.workspaceId, reimbursementId, status).then((updated) => {
+        if (!updated) return
+        if (status === 'awaiting-receipt') {
+          addFundActivity(reimbursement.workspaceId, 'اعتماد التعويض وتسجيل الصرف', `${reimbursement.title} · ${reimbursement.member}`, `− ${money(reimbursement.amount)} ر.س`, 'success')
+          showFundMessage('سُجل صرف التعويض محاسبيًا. ينتظر تأكيد المستفيد لوصول التحويل الخارجي.')
+        } else {
+          addFundActivity(reimbursement.workspaceId, 'رفض طلب التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, 'pending')
+          showFundMessage('تم رفض طلب التعويض وتسجيل القرار في السجل.')
+        }
+      }).catch((error: unknown) => {
+        console.error('Deciding a reimbursement failed:', error)
+        showFundMessage(`تعذر تحديث طلب التعويض: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     setReimbursements((current) => current.map((item) => item.id === reimbursementId ? { ...item, status } : item))
     if (status === 'awaiting-receipt') {
       const workspace = allFunds.find((fund) => fund.id === reimbursement.workspaceId)
@@ -920,10 +1134,22 @@ function App() {
   }
 
   const confirmReimbursementReceipt = (reimbursementId: number, received: boolean) => {
+    const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
+    if (hasFirebaseConfig) {
+      if (!currentUser || !reimbursement) return
+      void confirmSyncedReimbursementReceipt(reimbursement.workspaceId, reimbursementId, currentUser.uid, received).then((updated) => {
+        if (!updated) return
+        addFundActivity(reimbursement.workspaceId, received ? 'تأكيد استلام التعويض' : 'اعتراض: لم يصل التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, received ? 'success' : 'pending')
+        showFundMessage(received ? 'تم تأكيد استلام التعويض.' : 'تم تسجيل اعتراض المستفيد على عدم الاستلام.')
+      }).catch((error: unknown) => {
+        console.error('Confirming a reimbursement receipt failed:', error)
+        showFundMessage(`تعذر تحديث تأكيد الاستلام: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     setReimbursements((current) => current.map((item) => item.id === reimbursementId
       ? { ...item, status: received ? 'received' : 'objection' }
       : item))
-    const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
     if (reimbursement) addFundActivity(reimbursement.workspaceId, received ? 'تأكيد استلام التعويض' : 'اعتراض: لم يصل التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, received ? 'success' : 'pending')
     showFundMessage(received ? 'تم تأكيد استلام التعويض.' : 'تم تسجيل اعتراض المستفيد على عدم الاستلام.')
   }
@@ -960,10 +1186,22 @@ function App() {
         <div className="workspace-switcher">
           <div className="workspace-avatar">ع</div>
           <div className="workspace-copy">
-            <span>مساحة العمل</span>
-            <strong>مجموعة الأصدقاء</strong>
+            <span>{groupsLoading ? 'جارٍ تحميل المجموعات...' : 'المجموعة الحالية'}</span>
+            {currentUser && userGroups.length > 0
+              ? <select aria-label="اختيار المجموعة" value={selectedWorkspaceId ?? ''} onChange={(event) => event.target.value && openWorkspace(event.target.value)}>
+                {userGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              </select>
+              : <strong>{currentUser ? 'لا توجد مجموعات بعد' : 'سجّل الدخول للبدء'}</strong>}
           </div>
-          <ChevronDown size={16} />
+        </div>
+        <div className="group-actions">
+          {currentUser
+            ? <>
+              <button type="button" onClick={() => startCreate('fund')}><Plus size={14} /> مجموعة جديدة</button>
+              <button type="button" onClick={() => { setGroupActionError(''); setJoinCode(''); setCreatedInviteCode(''); setGroupModalOpen(true) }}>انضمام برمز</button>
+              {selectedGroup && <button type="button" onClick={() => setGroupSettingsOpen(true)}><Settings2 size={14} /> إعدادات المجموعة</button>}
+            </>
+            : <button type="button" onClick={() => setShowAuthModal(true)}>تسجيل الدخول</button>}
         </div>
 
         <span className="nav-heading">القائمة الرئيسية</span>
@@ -979,8 +1217,8 @@ function App() {
 
         <div className="sidebar-divider" />
         <div className="side-section-heading">
-          <span className="nav-heading">صناديقي</span>
-          <button className="icon-button mini" aria-label="إنشاء صندوق" onClick={() => openView('funds')}><Plus size={16} /></button>
+          <span className="nav-heading">مجموعاتي</span>
+          <button className="icon-button mini" aria-label="إنشاء مجموعة" onClick={() => startCreate('fund')}><Plus size={16} /></button>
         </div>
         {allFunds.map((fund) => (
           <button key={fund.id} className={`side-fund ${selectedWorkspaceId === fund.id ? 'active' : ''}`} aria-current={selectedWorkspaceId === fund.id ? 'page' : undefined} onClick={() => openWorkspace(fund.id)}>
@@ -991,9 +1229,9 @@ function App() {
         ))}
 
         <div className="sidebar-bottom">
-          <button className="profile-button" onClick={() => setProfileSettingsOpen(true)} aria-label="إعدادات الحساب ووسيلة التحويل">
-            <span className="profile-avatar">م</span>
-            <span className="profile-copy"><strong>{authLoading ? 'جارٍ تحميل الحساب...' : currentUser?.displayName || currentUser?.email || currentUserName}</strong><small>الحساب الشخصي</small></span>
+          <button className="profile-button" onClick={() => currentUser ? setProfileSettingsOpen(true) : setShowAuthModal(true)} aria-label="إعدادات الحساب ووسيلة التحويل">
+            <span className="profile-avatar">{profilePhotoURL ? <img src={profilePhotoURL} alt="" /> : currentUserName.slice(0, 1)}</span>
+            <span className="profile-copy"><strong>{authLoading ? 'جارٍ تحميل الحساب...' : currentUserName || currentUser?.email || 'تسجيل الدخول'}</strong><small>{currentUser ? 'الحساب الشخصي' : 'يلزم تسجيل الدخول'}</small></span>
             <ChevronDown size={16} />
           </button>
         </div>
@@ -1018,7 +1256,7 @@ function App() {
               </button>
               {menuOpen && (
                 <div className="create-menu">
-                  <button onClick={() => startCreate('fund')}><Wallet size={17} /><span><strong>صندوق جديد</strong><small>للمصروفات المستمرة</small></span></button>
+                  <button onClick={() => startCreate('fund')}><Wallet size={17} /><span><strong>مجموعة جديدة</strong><small>أنشئ مساحة لمصروفات الأعضاء</small></span></button>
                   <button onClick={() => startCreate('gathering')}><UsersRound size={17} /><span><strong>جمعة جديدة</strong><small>للمناسبات والطلعات</small></span></button>
                   <button onClick={() => openView('split')}><ArrowLeftRight size={17} /><span><strong>قسمة سريعة</strong><small>قسّم مبلغًا على المجموعة</small></span></button>
                 </div>
@@ -1033,16 +1271,20 @@ function App() {
             {!gatheringSyncError && !firestoreError && firestoreStatus === 'connected' && `متصل بـ Firestore (${import.meta.env.VITE_FIREBASE_PROJECT_ID})؛ الجمعات والمساهمات تتزامن مباشرة.`}
             {!gatheringSyncError && !firestoreError && firestoreStatus === 'connecting' && 'جار الاتصال بـ Firestore؛ إجراءات الدفع متوقفة حتى اكتمال المزامنة.'}
             {!gatheringSyncError && !firestoreError && firestoreStatus === 'error' && 'تعذّر الاتصال بـ Firestore.'}
-            {!hasFirebaseConfig && 'تنبيه: Firebase غير مهيأ؛ البيانات محفوظة محلياً في هذا المتصفح فقط.'}
+            {!hasFirebaseConfig && 'Firebase غير مهيأ؛ لا يمكن تحميل المجموعات أو حفظها.'}
+            {hasFirebaseConfig && !authLoading && !currentUser && !firestoreError && 'سجّل الدخول لعرض مجموعاتك أو إنشاء مجموعة جديدة.'}
+            {currentUser && !groupsLoading && userGroups.length === 0 && !firestoreError && 'لا توجد مجموعات لهذا الحساب بعد؛ أنشئ مجموعة أو انضم برمز دعوة.'}
           </div>
           {createdMessage && <div className="toast-message"><CircleCheck size={17} />{createdMessage}</div>}
-          {activeView === 'overview' && <Overview onNavigate={openView} onOpenWorkspace={openWorkspace} funds={allFunds} gatherings={allGatherings} />}
+          {activeView === 'overview' && <Overview onNavigate={openView} onOpenWorkspace={openWorkspace} currentUserName={currentUserName} funds={allFunds} gatherings={allGatherings} history={fundHistory} />}
           {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && !selectedWorkspace
             ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
             : <FundsView
             onNavigate={openView}
             onOpenWorkspace={openWorkspace}
             onCreate={() => startCreate('fund')}
+            currentUserId={currentUserId}
+            canManageGroup={canManageGroup}
             funds={allFunds}
             workspace={activeView === 'workspace' ? selectedWorkspace : undefined}
             requests={kattahRequests}
@@ -1064,6 +1306,8 @@ function App() {
           />)}
           {activeView === 'gatherings' && <GatheringsView
             language={gatheringsLanguage}
+            currentUserId={currentUserId}
+            history={fundHistory}
             onLanguageChange={setGatheringsLanguage}
             onNavigate={openView}
             onCreate={() => startCreate('gathering')}
@@ -1104,7 +1348,7 @@ function App() {
               onNavigate={openView}
             />
           )}
-          {activeView === 'activity' && <ActivityView onNavigate={openView} />}
+          {activeView === 'activity' && <ActivityView onNavigate={openView} history={fundHistory} />}
           <footer className="page-footer">
             <span>نسق · مصروفاتكم، مرتّبة.</span>
             <span><span className="footer-status-dot" /> جميع الأرصدة المعروضة سجلات محاسبية وليست أموالًا محفوظة</span>
@@ -1116,13 +1360,11 @@ function App() {
           <form className={`create-modal ${createKind === 'gathering' && gatheringsLanguage === 'en' ? 'modal-english' : ''}`} onSubmit={saveNewItem}>
             <button type="button" className="icon-button modal-close" aria-label="إغلاق" onClick={() => setCreateKind(null)}><X size={18} /></button>
             <span className="modal-icon">{createKind === 'fund' ? <Wallet size={21} /> : <UsersRound size={21} />}</span>
-            <span className="date-line">{createKind === 'fund' ? 'مصروفاتكم المستمرة' : gatheringsLanguage === 'ar' ? 'خططوا لها سوا' : 'Plan it together'}</span>
-            <h2>{createKind === 'fund' ? 'أنشئ صندوقًا جديدًا' : gatheringsLanguage === 'ar' ? 'رتّبوا جمعتكم الجاية' : 'Create a gathering'}</h2>
-            <p>{createKind === 'fund' ? 'اجمع التزامات ومصروفات مجموعتك في مكان واحد.' : gatheringsLanguage === 'ar' ? 'اختر موعدًا سريعًا وحدد آخر وقت لقبول الدعوة.' : 'Choose a quick date and set the RSVP deadline.'}</p>
-            <label className="modal-field"><span>{createKind === 'fund' ? 'اسم الصندوق' : gatheringsLanguage === 'ar' ? 'عنوان الجمعة' : 'Gathering title'}</span><input autoFocus required value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: سكن الأصدقاء' : gatheringsLanguage === 'ar' ? 'مثال: عشاء فريق العمل' : 'e.g. Team dinner'} /></label>
-            {createKind === 'fund' ? (
-              <label className="modal-field"><span>أقرب التزام (اختياري)</span><input value={createDetail} onChange={(event) => setCreateDetail(event.target.value)} placeholder="مثال: فاتورة الإنترنت · ١ نوفمبر" /></label>
-            ) : (
+            <span className="date-line">{createKind === 'fund' ? 'مساحة مشتركة للأعضاء' : gatheringsLanguage === 'ar' ? 'خططوا لها سوا' : 'Plan it together'}</span>
+            <h2>{createKind === 'fund' ? 'أنشئ مجموعة جديدة' : gatheringsLanguage === 'ar' ? 'رتّبوا جمعتكم الجاية' : 'Create a gathering'}</h2>
+            <p>{createKind === 'fund' ? 'ستُحفظ المجموعة وعضويتها في Firestore ويمكن دعوة الأعضاء برمز.' : gatheringsLanguage === 'ar' ? 'اختر موعدًا سريعًا وحدد آخر وقت لقبول الدعوة.' : 'Choose a quick date and set the RSVP deadline.'}</p>
+            <label className="modal-field"><span>{createKind === 'fund' ? 'اسم المجموعة' : gatheringsLanguage === 'ar' ? 'عنوان الجمعة' : 'Gathering title'}</span><input autoFocus required value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: مجموعة الأصدقاء' : gatheringsLanguage === 'ar' ? 'مثال: عشاء فريق العمل' : 'e.g. Team dinner'} /></label>
+            {createKind !== 'fund' && (
               <>
                 <label className="modal-field"><span>{gatheringsLanguage === 'ar' ? 'الموقع' : 'Location'}</span><input value={gatheringLocation} onChange={(event) => setGatheringLocation(event.target.value)} placeholder={gatheringsLanguage === 'ar' ? 'مثال: استراحة الشباب' : 'e.g. The cabin'} /></label>
                 <div className="modal-field">
@@ -1177,98 +1419,116 @@ function App() {
                 {gatheringFormError && <p className="form-error" role="alert">{gatheringFormError}</p>}
               </>
             )}
-            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setCreateKind(null)}>{createKind === 'fund' || gatheringsLanguage === 'ar' ? 'إلغاء' : 'Cancel'}</button><button type="submit" className="button-primary"><Plus size={16} /> {createKind === 'fund' ? 'إنشاء الصندوق' : gatheringsLanguage === 'ar' ? 'إنشاء الجمعة' : 'Create gathering'}</button></div>
-            {createKind === 'fund' && <small className="modal-prototype-note">نموذج أولي · تُحفظ الإضافة لهذه الجلسة فقط</small>}
+            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setCreateKind(null)}>{createKind === 'fund' || gatheringsLanguage === 'ar' ? 'إلغاء' : 'Cancel'}</button><button type="submit" className="button-primary"><Plus size={16} /> {createKind === 'fund' ? 'إنشاء المجموعة' : gatheringsLanguage === 'ar' ? 'إنشاء الجمعة' : 'Create gathering'}</button></div>
+            {createKind === 'fund' && firestoreError && <p className="form-error" role="alert">{firestoreError}</p>}
           </form>
         </div>
       )}
-      {profileSettingsOpen && (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileSettingsOpen(false) }}>
-          <form className="create-modal profile-settings-modal" onSubmit={(event) => {
-            event.preventDefault()
-            setProfileSettingsOpen(false)
-            showFundMessage('تم حفظ وسيلة التحويل المفضلة في هذه الجلسة.')
-          }}>
-            <button type="button" className="icon-button modal-close" aria-label="إغلاق" onClick={() => setProfileSettingsOpen(false)}><X size={18} /></button>
-            <span className="modal-icon"><CreditCard size={21} /></span>
-            <span className="date-line">إعدادات الحساب</span>
-            <h2>وسيلة التحويل المفضلة</h2>
-            <p>تظهر هذه البيانات عند نسخ مستحقاتك في تسوية الجمعة.</p>
-            <label className="modal-field"><span>وسيلة التحويل</span><select value={paymentProfile.method} onChange={(event) => setPaymentProfile((current) => ({ ...current, method: event.target.value as PaymentMethod }))}><option value="iban">IBAN</option><option value="stcPay">stc pay</option><option value="urpay">urpay</option><option value="phone">رقم الجوال</option></select></label>
-            <label className="modal-field"><span>{paymentProfile.method === 'iban' ? 'رقم الآيبان' : paymentProfile.method === 'phone' ? 'رقم الجوال' : 'رقم الحساب أو الجوال'}</span><input value={paymentProfile.details} onChange={(event) => setPaymentProfile((current) => ({ ...current, details: event.target.value }))} placeholder={paymentProfile.method === 'iban' ? 'SA...' : '05xxxxxxxx'} /></label>
-            <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setProfileSettingsOpen(false)}>إلغاء</button><button type="submit" className="button-primary"><Check size={16} /> حفظ الإعدادات</button></div>
+      {groupModalOpen && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setGroupModalOpen(false) }}>
+          <form className="create-modal group-join-modal" onSubmit={createdInviteCode ? (event) => event.preventDefault() : submitGroupJoin}>
+            <button type="button" className="icon-button modal-close" aria-label="إغلاق" onClick={() => setGroupModalOpen(false)}><X size={18} /></button>
+            <span className="modal-icon"><UsersRound size={21} /></span>
+            {createdInviteCode
+              ? <>
+                <span className="date-line">تم إنشاء المجموعة</span>
+                <h2>شارك رمز الدعوة</h2>
+                <p>أرسل هذا الرمز إلى الأعضاء الذين تريد دعوتهم.</p>
+                <label className="modal-field"><span>رمز الدعوة</span><input readOnly value={createdInviteCode} dir="ltr" /></label>
+                {groupActionError && <p className="form-error" role="alert">{groupActionError}</p>}
+                <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setGroupModalOpen(false)}>إغلاق</button><button type="button" className="button-primary" onClick={() => void copyInviteCode()}>نسخ الرمز</button></div>
+              </>
+              : <>
+                <span className="date-line">الانضمام إلى مجموعة</span>
+                <h2>أدخل رمز الدعوة</h2>
+                <p>اطلب رمز الدعوة المكوّن من 8 أحرف أو أرقام من مالك المجموعة.</p>
+                <label className="modal-field"><span>رمز الدعوة</span><input autoFocus required minLength={8} maxLength={8} value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="مثال: A2BC3DEF" /></label>
+                {groupActionError && <p className="form-error" role="alert">{groupActionError}</p>}
+                <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setGroupModalOpen(false)}>إلغاء</button><button type="submit" className="button-primary" disabled={groupsLoading}>انضمام</button></div>
+              </>}
           </form>
         </div>
       )}
+      {profileSettingsOpen && currentUser && <ProfileSettingsModal
+        user={currentUser}
+        onClose={() => setProfileSettingsOpen(false)}
+        onSaved={(displayName, photoURL) => {
+          setProfileDisplayName(displayName)
+          setProfilePhotoURL(photoURL)
+          void refreshUserGroups().catch((error: unknown) => {
+            console.error('Refreshing group members after profile update failed:', error)
+            setFirestoreStatus('error')
+            setFirestoreError(error instanceof Error ? error.message : String(error))
+          })
+          showFundMessage('تم حفظ إعدادات الملف الشخصي وبيانات التحويل.')
+        }}
+      />}
+      {groupSettingsOpen && selectedGroup && <GroupSettingsModal
+        group={selectedGroup}
+        currentUserId={currentUserId}
+        onClose={() => setGroupSettingsOpen(false)}
+        onChanged={refreshUserGroups}
+      />}
+      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
     </div>
   )
 }
 
-function Overview({ onNavigate, onOpenWorkspace, funds: currentFunds, gatherings: currentGatherings }: { onNavigate: (view: View) => void; onOpenWorkspace: (workspaceId: string) => void; funds: Fund[]; gatherings: Gathering[] }) {
+function Overview({ onNavigate, onOpenWorkspace, currentUserName, funds: currentFunds, gatherings: currentGatherings, history }: {
+  onNavigate: (view: View) => void
+  onOpenWorkspace: (workspaceId: string) => void
+  currentUserName: string
+  funds: Fund[]
+  gatherings: Gathering[]
+  history: FundActivity[]
+}) {
+  const totalBalance = currentFunds.reduce((sum, fund) => sum + fund.balance, 0)
+  const memberCount = currentFunds.reduce((sum, fund) => sum + fund.members, 0)
+  const upcomingGatherings = currentGatherings.length
   return (
     <>
       <section className="welcome-row">
         <div>
-          <div className="date-line"><CalendarDays size={15} /> الثلاثاء، ٢٧ أكتوبر ٢٠٢٦</div>
-          <h1>هلا محمد <span>👋</span></h1>
-          <p>هذي لمحة سريعة عن حسابك ومصروفاتك المشتركة والتزاماتك.</p>
+          <div className="date-line"><CalendarDays size={15} /> نسق · مساحة مجموعاتك</div>
+          <h1>هلا {currentUserName} <span>👋</span></h1>
+          <p>هذه لمحة عن مجموعاتك وأرصدتها والجمعات القادمة.</p>
         </div>
-        <button className="button-primary welcome-cta" onClick={() => onNavigate('split')}><Plus size={17} /> سجّل مصروف</button>
+        <button className="button-primary welcome-cta" onClick={() => onNavigate('funds')}><UsersRound size={17} /> مجموعاتي</button>
       </section>
 
       <section className="stats-grid" aria-label="ملخص الحساب">
-        <StatCard icon={Wallet} color="green" label="إجمالي الصناديق" amount="٤٬٢٥٠" suffix="ر.س" note="في ٣ صناديق نشطة" trend="+ ٨٪" />
-        <StatCard icon={ArrowUpLeft} color="peach" label="مبالغ لك" amount="٦٧٨" suffix="ر.س" note="من ٤ أعضاء" trend="مستحق لك" />
-        <StatCard icon={ArrowDownLeft} color="lavender" label="مبالغ عليك" amount="٢٤٠" suffix="ر.س" note="على ٣ عمليات" trend="عليك تسويتها" />
-        <StatCard icon={UsersRound} color="blue" label="الجمعات القادمة" amount="٢" suffix="جمعات" note="أقربها الجمعة القادمة" trend="قريبًا" />
+        <StatCard icon={Wallet} color="green" label="رصيد مجموعاتك" amount={money(totalBalance)} suffix="ر.س" note={`${currentFunds.length} مجموعة`} trend="مسجّل" />
+        <StatCard icon={UsersRound} color="peach" label="عضويات المجموعات" amount={money(memberCount)} suffix="عضوية" note="بحسب بيانات Firestore" trend="أعضاء" />
+        <StatCard icon={ArrowDownLeft} color="lavender" label="المجموعات" amount={money(currentFunds.length)} suffix="مجموعة" note="المجموعات التي تنتمي إليها" trend="محدّثة" />
+        <StatCard icon={CalendarDays} color="blue" label="الجمعات القادمة" amount={money(upcomingGatherings)} suffix="جمعات" note="في المجموعة الحالية" trend="قريبًا" />
       </section>
 
       <section className="content-grid">
         <div className="panel expenses-panel">
           <div className="panel-heading">
-            <div><h2>آخر العمليات</h2><p>تابع مصروفاتك المشتركة أولًا بأول</p></div>
+            <div><h2>آخر العمليات</h2><p>العمليات المسجلة في المجموعة الحالية</p></div>
             <button className="text-button" onClick={() => onNavigate('activity')}>عرض الكل <ArrowUpLeft size={15} /></button>
           </div>
-          <div className="expense-list">
-            {expenses.map((expense) => {
-              const Icon = expense.icon
-              return (
-                <div className="expense-row" key={expense.name}>
-                  <span className={`expense-icon ${expense.color}`}><Icon size={19} /></span>
-                  <div className="expense-details"><strong>{expense.name}</strong><span>{expense.group} <i /> {expense.person}</span></div>
-                  <div className="expense-amount"><strong>{money(expense.amount)} <small>ر.س</small></strong><span className={`status-label ${expense.status === 'تمت التسوية' ? 'status-done' : ''}`}>{expense.status === 'تمت التسوية' ? <CircleCheck size={12} /> : <Clock3 size={12} />}{expense.status}</span></div>
-                </div>
-              )
-            })}
-          </div>
+          {history.length ? <ActivityRows compact history={history.slice(0, 3)} /> : <p className="empty-expenses">لا توجد عمليات مسجلة في هذه المجموعة بعد.</p>}
         </div>
 
         <div className="panel upcoming-panel">
           <div className="panel-heading">
-            <div><h2>التزاماتك القادمة</h2><p>لا تفوّت موعد أي التزام</p></div>
+            <div><h2>ابدأ مجموعة</h2><p>أنشئ مجموعة أو انضم برمز دعوة.</p></div>
             <button className="icon-button mini" aria-label="عرض التقويم"><CalendarDays size={17} /></button>
           </div>
-          <div className="due-card">
-            <span className="due-date"><strong>٢٨</strong><small>أكتوبر</small></span>
-            <div className="due-copy"><strong>فاتورة الكهرباء</strong><span>استراحة الشباب · بعد يوم</span></div>
-            <strong className="due-amount">٣٨٠ <small>ر.س</small></strong>
-          </div>
-          <div className="due-card">
-            <span className="due-date due-date-purple"><strong>٠١</strong><small>نوفمبر</small></span>
-            <div className="due-copy"><strong>الإيجار الشهري</strong><span>سكن الروضة · بعد ٥ أيام</span></div>
-            <strong className="due-amount">٢٬٤٠٠ <small>ر.س</small></strong>
-          </div>
-          <button className="panel-link" onClick={() => onNavigate('funds')}>كل الالتزامات <ArrowUpLeft size={15} /></button>
+          <button className="panel-link" onClick={() => onNavigate('funds')}>عرض المجموعات <ArrowUpLeft size={15} /></button>
         </div>
       </section>
 
       <section className="section-block">
         <div className="panel-heading section-heading">
-          <div><h2>مساحاتك</h2><p>صناديقك وجمعاتك المشتركة في مكان واحد</p></div>
+          <div><h2>مجموعاتك</h2><p>المجموعات التي أنت عضو فيها</p></div>
           <button className="text-button" onClick={() => onNavigate('funds')}>عرض الكل <ArrowUpLeft size={15} /></button>
         </div>
         <div className="fund-cards">
           {currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}
+          {!currentFunds.length && <p className="empty-expenses">لا توجد مجموعات لعرضها. أنشئ مجموعة أو انضم إلى واحدة باستخدام رمز دعوة.</p>}
         </div>
       </section>
 
@@ -1285,6 +1545,7 @@ function Overview({ onNavigate, onOpenWorkspace, funds: currentFunds, gatherings
               <span className="pill green-pill">{gathering.badge}</span>
             </div>
           ))}
+          {!currentGatherings.length && <p className="empty-expenses">لا توجد جمعات مسجلة في المجموعة الحالية.</p>}
         </div>
         <div className="tip-card">
           <span className="tip-icon"><Sparkles size={18} /></span>
@@ -1366,6 +1627,8 @@ function FundsView({
   onNavigate,
   onOpenWorkspace,
   onCreate,
+  currentUserId,
+  canManageGroup,
   funds: currentFunds,
   workspace,
   requests,
@@ -1388,6 +1651,8 @@ function FundsView({
   onNavigate: (view: View) => void
   onOpenWorkspace: (workspaceId: string) => void
   onCreate: () => void
+  currentUserId: string
+  canManageGroup: boolean
   funds: Fund[]
   workspace?: Fund
   requests: KattahRequest[]
@@ -1395,9 +1660,9 @@ function FundsView({
   reimbursements: Reimbursement[]
   history: FundActivity[]
   firestoreStatus: 'local' | 'connecting' | 'connected' | 'error'
-  onConfirmContribution: (requestId: number, memberName: string) => void
-  onApproveContribution: (requestId: number, memberName: string) => void
-  onRejectContribution: (requestId: number, memberName: string) => void
+  onConfirmContribution: (requestId: number, memberUid: string) => void
+  onApproveContribution: (requestId: number, memberUid: string) => void
+  onRejectContribution: (requestId: number, memberUid: string) => void
   onApproveAllContributions: (requestId: number) => void
   onReportObligationPayment: (obligationId: number) => void
   onApproveObligationPayment: (obligationId: number) => void
@@ -1415,7 +1680,7 @@ function FundsView({
   const [receiptName, setReceiptName] = useState('')
 
   const selectedFund = workspace ?? currentFunds[0]
-  const workspaceId = selectedFund?.id ?? funds[0].id
+  const workspaceId = selectedFund?.id ?? ''
   const currentRequests = workspace ? requests.filter((request) => request.workspaceId === workspace.id) : requests
   const currentObligations = workspace ? obligations.filter((obligation) => obligation.workspaceId === workspace.id) : obligations
   const currentReimbursements = workspace ? reimbursements.filter((request) => request.workspaceId === workspace.id) : reimbursements
@@ -1425,7 +1690,7 @@ function FundsView({
   const confirmedContributions = sortedContributions.filter((item) => item.status === 'awaiting' || item.status === 'paid')
   const confirmationRanks = new Map(confirmedContributions.map((item, index) => [item.name, index + 1]))
   const firstConfirmer = confirmedContributions[0]?.name
-  const currentMemberPayment = currentRequest?.contributions.find((item) => item.name === currentUserName)
+  const currentMemberPayment = currentRequest?.contributions.find((item) => item.uid === currentUserId)
   const canConfirmPayment = currentMemberPayment?.status === 'unpaid' || currentMemberPayment?.status === 'rejected'
   const paymentActionsEnabled = firestoreStatus === 'local' || firestoreStatus === 'connected'
   const paidContributions = currentRequest?.contributions.filter((item) => item.status === 'paid') ?? []
@@ -1503,12 +1768,12 @@ function FundsView({
       )}
 
       <section className="panel kattah-panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({awaitingContributions.length})</button>}</div></div>
+        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{canManageGroup && awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({awaitingContributions.length})</button>}</div></div>
         {currentRequest ? (
           <>
             <div className="contribution-primary-action">
               {canConfirmPayment
-                ? <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(currentRequest.id, currentUserName)}><Check size={16} /> تأكيد الدفع</button>
+                ? <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(currentRequest.id, currentUserId)}><Check size={16} /> تأكيد الدفع</button>
                 : currentMemberPayment && <PaymentBadge status={currentMemberPayment.status} />}
               {canConfirmPayment && <small>تأكيدك سيظهر في أعلى القائمة، ولا يضاف المبلغ للرصيد قبل الاعتماد.</small>}
             </div>
@@ -1524,8 +1789,8 @@ function FundsView({
                   <span className="contribution-name"><strong>{confirmationRanks.has(contribution.name) && `${confirmationRanks.get(contribution.name)}- `}{contribution.name}{contribution.name === firstConfirmer && <span className="first-confirmer-badge">⚡ أول المسددين</span>}</strong><small>{money(contribution.amount)} ر.س</small></span>
                   <PaymentBadge status={contribution.status} />
                   {contribution.status === 'unpaid' && <span className="member-waiting">بانتظار العضو</span>}
-                  {contribution.status === 'rejected' && contribution.name !== currentUserName && <span className="member-waiting">لم تُستلم الحوالة</span>}
-                  {contribution.status === 'awaiting' && <span className="review-actions"><button className="button-outline row-action approve-action" disabled={!paymentActionsEnabled} onClick={() => onApproveContribution(currentRequest.id, contribution.name)}><Check size={13} /> تم الاستلام</button><button className="reject-action" disabled={!paymentActionsEnabled} onClick={() => onRejectContribution(currentRequest.id, contribution.name)}>لم تصل الحوالة</button></span>}
+                  {contribution.status === 'rejected' && contribution.uid !== currentUserId && <span className="member-waiting">لم تُستلم الحوالة</span>}
+                  {contribution.status === 'awaiting' && canManageGroup && <span className="review-actions"><button className="button-outline row-action approve-action" disabled={!paymentActionsEnabled} onClick={() => onApproveContribution(currentRequest.id, contribution.uid)}><Check size={13} /> تم الاستلام</button><button className="reject-action" disabled={!paymentActionsEnabled} onClick={() => onRejectContribution(currentRequest.id, contribution.uid)}>لم تصل الحوالة</button></span>}
                   {contribution.status === 'paid' && <span className="verified-mark"><CircleCheck size={15} /></span>}
                 </div>
               ))}
@@ -1582,6 +1847,8 @@ function FundsView({
 
 function GatheringsView({
   language,
+  currentUserId,
+  history,
   onLanguageChange,
   onNavigate,
   onCreate,
@@ -1598,6 +1865,8 @@ function GatheringsView({
   onReminder,
 }: {
   language: GatheringLanguage
+  currentUserId: string
+  history: FundActivity[]
   onLanguageChange: (language: GatheringLanguage) => void
   onNavigate: (view: View) => void
   onCreate: () => void
@@ -1699,7 +1968,7 @@ function GatheringsView({
             ? `${String(days).padStart(2, '0')}:${String(hours).padStart(2, '0')}`
             : `${String(Math.floor(remaining / 3_600_000)).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
           const joined = gathering.participants.filter((person) => person.decision === 'joined')
-          const currentDecision = gathering.participants.find((person) => person.name === 'محمد السالم')?.decision
+          const currentDecision = gathering.participants.find((person) => person.uid === currentUserId)?.decision
           const isOrganizer = gathering.createdById === currentUserId
           const displayDate = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
             weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
@@ -1789,7 +2058,7 @@ function GatheringsView({
             <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{selectedGathering.tasks.length}</span></div>
             {selectedGathering.createdById === currentUserId && <form className="task-entry-form" onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; onAddTask(selectedGathering.id, taskTitle); setTaskTitle('') }}><label className="modal-field"><span>{isEnglish ? 'New task' : 'مهمة جديدة'}</span><input required value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={isEnglish ? 'e.g. Bring drinks' : 'مثال: شراء المشروبات'} /></label><button className="button-outline" type="submit"><Plus size={15} /> {isEnglish ? 'Add task' : 'إضافة مهمة'}</button></form>}
             <div className="gathering-task-list">{selectedGathering.tasks.map((task) => {
-              const currentMemberJoined = selectedGathering.participants.some((person) => person.name === currentUserName && person.decision === 'joined')
+              const currentMemberJoined = selectedGathering.participants.some((person) => person.uid === currentUserId && person.decision === 'joined')
               return <div className="gathering-task-row" key={task.id}><span className={task.assignedTo ? 'task-check task-assigned' : 'task-check'}>{task.assignedTo ? <Check size={13} /> : null}</span><strong>{task.title}</strong>{task.assignedTo ? <span className="task-assignee">{isEnglish ? `Taken by ${task.assignedTo}` : `متكفل بها: ${task.assignedTo}`}</span> : currentMemberJoined ? <button className="task-claim-button" onClick={() => onClaimTask(selectedGathering.id, task.id)}>{isEnglish ? 'I can do it' : 'أتكفل بها'}</button> : <span className="task-assignee">{isEnglish ? 'Available' : 'متاحة'}</span>}</div>
             })}{selectedGathering.tasks.length === 0 && <p className="empty-expenses">{isEnglish ? 'No tasks added yet.' : 'لا توجد مهام مضافة بعد.'}</p>}</div>
           </section>
@@ -1825,7 +2094,7 @@ function GatheringsView({
       )}
       <section className="panel table-panel">
         <div className="panel-heading"><div><h2>{isEnglish ? 'Recent activity' : 'آخر الجمعات'}</h2><p>{isEnglish ? 'Recent events and their settlements' : 'المناسبات السابقة والتسويات المرتبطة بها'}</p></div></div>
-        <ActivityRows compact />
+        <ActivityRows compact history={history.slice(0, 3)} />
       </section>
     </div>
   )
@@ -1931,29 +2200,29 @@ function SplitView({ amount, people, shares, customShares, splitMatches, splitTo
   )
 }
 
-function ActivityView({ onNavigate }: { onNavigate: (view: View) => void }) {
+function ActivityView({ onNavigate, history }: { onNavigate: (view: View) => void; history: FundActivity[] }) {
   return (
     <>
-      <PageIntro eyebrow="كل شيء موثّق وواضح" title="سجل العمليات" description="تتبّعوا المصروفات والتعويضات وتأكيدات الاستلام في مكان واحد." action="قسمة جديدة" onAction={() => onNavigate('split')} />
+      <PageIntro eyebrow="عمليات المجموعة الحالية" title="سجل العمليات" description="تتبّعوا العمليات المسجلة للمجموعة المحددة." action="عرض المجموعات" onAction={() => onNavigate('funds')} />
       <section className="stats-grid activity-stats">
-        <StatCard icon={ArrowUpLeft} color="green" label="إجمالي ما دُفع" amount="٥٬٢٨٠" suffix="ر.س" note="هذا الشهر" trend="مسجّل" />
-        <StatCard icon={Clock3} color="peach" label="بانتظار التأكيد" amount="٦٧٨" suffix="ر.س" note="لا يعد تحويلًا مؤكدًا" trend="متابعة" />
-        <StatCard icon={CircleCheck} color="lavender" label="عمليات مكتملة" amount="٢٤" suffix="عملية" note="خلال هذا الشهر" trend="مكتملة" />
-        <StatCard icon={CircleAlert} color="blue" label="تحتاج مراجعة" amount="٢" suffix="طلبات" note="طلبات تعويض جديدة" trend="مراجعة" />
+        <StatCard icon={ReceiptText} color="green" label="العمليات" amount={money(history.length)} suffix="عملية" note="في المجموعة الحالية" trend="مسجّل" />
+        <StatCard icon={Clock3} color="peach" label="بانتظار التأكيد" amount={money(history.filter((item) => item.kind === 'pending').length)} suffix="عملية" note="بحسب السجل الحالي" trend="متابعة" />
+        <StatCard icon={CircleCheck} color="lavender" label="مكتملة" amount={money(history.filter((item) => item.kind === 'success').length)} suffix="عملية" note="بحسب السجل الحالي" trend="مكتملة" />
+        <StatCard icon={UsersRound} color="blue" label="الأنشطة" amount={money(history.filter((item) => item.kind === 'event').length)} suffix="عملية" note="في المجموعة الحالية" trend="محدّثة" />
       </section>
       <section className="panel table-panel activity-table-panel">
-        <div className="panel-heading"><div><h2>كل العمليات</h2><p>سجل المجموعة المالي · أكتوبر ٢٠٢٦</p></div><div className="filter-pills"><button className="selected">الكل <span>٢٤</span></button><button>مصروفات</button><button>تعويضات</button></div></div>
-        <ActivityRows />
+        <div className="panel-heading"><div><h2>كل العمليات</h2><p>سجل المجموعة المالي</p></div><div className="filter-pills"><button className="selected">الكل <span>{history.length}</span></button></div></div>
+        <ActivityRows history={history} />
       </section>
       <div className="important-note"><ShieldCheck size={18} /><p><strong>عن التحويلات الخارجية</strong><span>تسجيل المحصّل للدفع لا يعني وصول التحويل. يكتمل السجل بعد تأكيد المستفيد استلامه، ويمكنه الاعتراض عند الحاجة.</span></p></div>
     </>
   )
 }
 
-function ActivityRows({ compact = false }: { compact?: boolean }) {
+function ActivityRows({ compact = false, history }: { compact?: boolean; history: FundActivity[] }) {
   return (
     <div className={`activity-rows ${compact ? 'compact-rows' : ''}`}>
-      {activityItems.map((item, index) => (
+      {history.map((item, index) => (
         <div className="activity-row" key={item.title}>
           <span className={`activity-icon activity-${item.kind}`}>{item.kind === 'success' ? <Check size={17} /> : item.kind === 'event' ? <UsersRound size={17} /> : <ArrowUpRight size={17} />}</span>
           <div className="activity-description"><strong>{item.title}</strong><span>{item.detail}</span></div>

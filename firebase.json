@@ -1,4 +1,7 @@
 {
+  "firestore": {
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "target": "nassaq-ohqtgp-e2b7f",
     "public": "dist",
