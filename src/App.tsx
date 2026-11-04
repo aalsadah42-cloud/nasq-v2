@@ -3,7 +3,13 @@ import type { FormEvent } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { create } from 'zustand'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { onAuthStateChanged, type User } from 'firebase/auth'
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  type User,
+} from 'firebase/auth'
 import type { DocumentData } from 'firebase/firestore'
 import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
 import { auth } from './lib/firebase'
@@ -24,7 +30,6 @@ import {
   type Reimbursement,
 } from './lib/fundOperations'
 import {
-  ArrowDownLeft,
   ArrowLeftRight,
   ArrowUpLeft,
   ArrowUpRight,
@@ -300,8 +305,10 @@ const useNavigationStore = create<NavigationState>((set) => ({
   setRoute: (route) => set(route),
 }))
 
-const money = (value: number) =>
-  new Intl.NumberFormat('ar-SA', { maximumFractionDigits: 2 }).format(value)
+const formatNumber = (value: number, locale = 'ar-SA') =>
+  new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value)
+
+const money = (value: number) => formatNumber(value)
 
 type DeadlinePreset = '30m' | '1h' | '2h' | 'before24h' | 'before6h' | 'before1h' | 'previousEvening'
 type DeadlineOption = { id: DeadlinePreset; labelAr: string; labelEn: string; at: number }
@@ -416,6 +423,14 @@ function App() {
     ? selectedWorkspace?.title ?? 'الصندوق'
     : navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
   const selectedGroup = userGroups.find((group) => group.id === selectedWorkspaceId)
+  const activeRequests = kattahRequests.filter((request) => request.workspaceId === selectedWorkspaceId)
+  const amountOwedToUser = reimbursements
+    .filter((item) => item.workspaceId === selectedWorkspaceId && item.memberUid === currentUserId && item.status === 'awaiting-receipt')
+    .reduce((sum, item) => sum + item.amount, 0)
+  const amountOwedByUser = activeRequests
+    .flatMap((request) => request.contributions)
+    .filter((contribution) => contribution.uid === currentUserId && ['unpaid', 'rejected'].includes(contribution.status))
+    .reduce((sum, contribution) => sum + contribution.amount, 0)
 
   useEffect(() => {
     if (!auth) return
@@ -613,6 +628,21 @@ function App() {
     setMenuOpen(false)
     setSidebarOpen(false)
     setSplitSaved(false)
+  }
+
+  const handleLogin = async (email: string, password: string) => {
+    if (!auth) throw new Error('إعداد Firebase غير متاح.')
+    await signInWithEmailAndPassword(auth, email, password)
+  }
+
+  const handleRegister = async (email: string, password: string) => {
+    if (!auth) throw new Error('إعداد Firebase غير متاح.')
+    await createUserWithEmailAndPassword(auth, email, password)
+  }
+
+  const handleResetPassword = async (email: string) => {
+    if (!auth) throw new Error('إعداد Firebase غير متاح.')
+    await sendPasswordResetEmail(auth, email)
   }
 
   const submitGroupJoin = async (event: FormEvent<HTMLFormElement>) => {
@@ -971,8 +1001,8 @@ function App() {
     if (hasFirebaseConfig) {
       void import('./fundPaymentSync').then(({ approveAllSyncedContributions }) => approveAllSyncedContributions(request.workspaceId, requestId, workspace?.balance ?? 0)).then((result) => {
         if (!result.count) return
-        addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${result.count} أعضاء`, `+ ${money(result.total)} ر.س`, 'success')
-        showFundMessage(`تم استلام واعتماد ${result.count} دفعة وإضافتها إلى رصيد الصندوق.`)
+        addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${formatNumber(result.count)} أعضاء`, `+ ${money(result.total)} ر.س`, 'success')
+        showFundMessage(`تم استلام واعتماد ${formatNumber(result.count)} دفعة وإضافتها إلى رصيد الصندوق.`)
       }).catch((error: unknown) => {
         console.error('Firestore batch contribution approval failed:', error)
         showFundMessage(`تعذر اعتماد الدفعات في Firestore: ${error instanceof Error ? error.message : String(error)}`)
@@ -982,8 +1012,8 @@ function App() {
     const pending = approveAwaitingInStore(requestId, workspace?.balance ?? 0)
     if (!pending.length) return
     const totalApproved = pending.reduce((sum, contribution) => sum + contribution.amount, 0)
-    addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${pending.length} أعضاء`, `+ ${money(totalApproved)} ر.س`, 'success')
-    showFundMessage(`تم استلام واعتماد ${pending.length} دفعة وإضافتها إلى رصيد الصندوق.`)
+    addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${formatNumber(pending.length)} أعضاء`, `+ ${money(totalApproved)} ر.س`, 'success')
+    showFundMessage(`تم استلام واعتماد ${formatNumber(pending.length)} دفعة وإضافتها إلى رصيد الصندوق.`)
   }
 
   const reportObligationPayment = (obligationId: number) => {
@@ -1155,7 +1185,7 @@ function App() {
   }
 
   const addPerson = () => {
-    setPeople((current) => [...current, `عضو ${current.length}`])
+    setPeople((current) => [...current, `عضو ${formatNumber(current.length)}`])
     setShares((current) => [...current, '0'])
   }
 
@@ -1187,21 +1217,24 @@ function App() {
           <div className="workspace-avatar">ع</div>
           <div className="workspace-copy">
             <span>{groupsLoading ? 'جارٍ تحميل المجموعات...' : 'المجموعة الحالية'}</span>
-            {currentUser && userGroups.length > 0
-              ? <select aria-label="اختيار المجموعة" value={selectedWorkspaceId ?? ''} onChange={(event) => event.target.value && openWorkspace(event.target.value)}>
-                {userGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-              </select>
-              : <strong>{currentUser ? 'لا توجد مجموعات بعد' : 'سجّل الدخول للبدء'}</strong>}
+            <select aria-label="إدارة المجموعات واختيار المجموعة" value={selectedWorkspaceId ?? '__empty__'} onChange={(event) => {
+              const value = event.target.value
+              if (value === '__create__') startCreate('fund')
+              else if (value === '__join__') {
+                setGroupActionError('')
+                setJoinCode('')
+                setCreatedInviteCode('')
+                setGroupModalOpen(true)
+              } else if (value === '__settings__') setGroupSettingsOpen(true)
+              else if (value && value !== '__empty__') openWorkspace(value)
+            }}>
+              <option value="__empty__" disabled>{groupsLoading ? 'جارٍ تحميل المجموعات...' : currentUser ? 'لا توجد مجموعات بعد' : 'سجّل الدخول للبدء'}</option>
+              {userGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              <option value="__create__">إنشاء مجموعة جديدة</option>
+              <option value="__join__">الانضمام برمز</option>
+              {selectedGroup && <option value="__settings__">إعدادات المجموعة</option>}
+            </select>
           </div>
-        </div>
-        <div className="group-actions">
-          {currentUser
-            ? <>
-              <button type="button" onClick={() => startCreate('fund')}><Plus size={14} /> مجموعة جديدة</button>
-              <button type="button" onClick={() => { setGroupActionError(''); setJoinCode(''); setCreatedInviteCode(''); setGroupModalOpen(true) }}>انضمام برمز</button>
-              {selectedGroup && <button type="button" onClick={() => setGroupSettingsOpen(true)}><Settings2 size={14} /> إعدادات المجموعة</button>}
-            </>
-            : <button type="button" onClick={() => setShowAuthModal(true)}>تسجيل الدخول</button>}
         </div>
 
         <span className="nav-heading">القائمة الرئيسية</span>
@@ -1210,23 +1243,10 @@ function App() {
             <button key={id} className={`nav-link ${activeView === id ? 'active' : ''}`} onClick={() => openView(id)}>
               <Icon size={19} strokeWidth={1.8} />
               <span>{label}</span>
-              {id === 'activity' &&                             <span className="nav-count">3</span>}
+              {id === 'activity' && <span className="nav-count">{formatNumber(3)}</span>}
             </button>
           ))}
         </nav>
-
-        <div className="sidebar-divider" />
-        <div className="side-section-heading">
-          <span className="nav-heading">مجموعاتي</span>
-          <button className="icon-button mini" aria-label="إنشاء مجموعة" onClick={() => startCreate('fund')}><Plus size={16} /></button>
-        </div>
-        {allFunds.map((fund) => (
-          <button key={fund.id} className={`side-fund ${selectedWorkspaceId === fund.id ? 'active' : ''}`} aria-current={selectedWorkspaceId === fund.id ? 'page' : undefined} onClick={() => openWorkspace(fund.id)}>
-            <span className={`side-fund-icon ${fund.color}`}>{fund.icon}</span>
-            <span>{fund.title}</span>
-            <span className="side-fund-dot" />
-          </button>
-        ))}
 
         <div className="sidebar-bottom">
           <button className="profile-button" onClick={() => currentUser ? setProfileSettingsOpen(true) : setShowAuthModal(true)} aria-label="إعدادات الحساب ووسيلة التحويل">
@@ -1276,7 +1296,20 @@ function App() {
             {currentUser && !groupsLoading && userGroups.length === 0 && !firestoreError && 'لا توجد مجموعات لهذا الحساب بعد؛ أنشئ مجموعة أو انضم برمز دعوة.'}
           </div>
           {createdMessage && <div className="toast-message"><CircleCheck size={17} />{createdMessage}</div>}
-          {activeView === 'overview' && <Overview onNavigate={openView} onOpenWorkspace={openWorkspace} currentUserName={currentUserName} funds={allFunds} gatherings={allGatherings} history={fundHistory} />}
+          {activeView === 'overview' && <Overview
+            onNavigate={openView}
+            onStartGroup={() => {
+              setGroupActionError('')
+              setJoinCode('')
+              setCreatedInviteCode('')
+              setGroupModalOpen(true)
+            }}
+            currentUserName={currentUserName}
+            activeGroupName={selectedWorkspace?.title ?? 'لا توجد مجموعة نشطة'}
+            amountOwedToUser={amountOwedToUser}
+            amountOwedByUser={amountOwedByUser}
+            history={fundHistory}
+          />}
           {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && !selectedWorkspace
             ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
             : <FundsView
@@ -1443,6 +1476,10 @@ function App() {
                 <h2>أدخل رمز الدعوة</h2>
                 <p>اطلب رمز الدعوة المكوّن من 8 أحرف أو أرقام من مالك المجموعة.</p>
                 <label className="modal-field"><span>رمز الدعوة</span><input autoFocus required minLength={8} maxLength={8} value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="مثال: A2BC3DEF" /></label>
+                <button type="button" className="text-button group-create-action" onClick={() => {
+                  setGroupModalOpen(false)
+                  startCreate('fund')
+                }}><Plus size={15} /> إنشاء مجموعة جديدة</button>
                 {groupActionError && <p className="form-error" role="alert">{groupActionError}</p>}
                 <div className="modal-actions"><button type="button" className="button-outline" onClick={() => setGroupModalOpen(false)}>إلغاء</button><button type="submit" className="button-primary" disabled={groupsLoading}>انضمام</button></div>
               </>}
@@ -1469,91 +1506,77 @@ function App() {
         onClose={() => setGroupSettingsOpen(false)}
         onChanged={refreshUserGroups}
       />}
-      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        onResetPassword={handleResetPassword}
+      />
     </div>
   )
 }
 
-function Overview({ onNavigate, onOpenWorkspace, currentUserName, funds: currentFunds, gatherings: currentGatherings, history }: {
+function Overview({ onNavigate, onStartGroup, currentUserName, activeGroupName, amountOwedToUser, amountOwedByUser, history }: {
   onNavigate: (view: View) => void
-  onOpenWorkspace: (workspaceId: string) => void
+  onStartGroup: () => void
   currentUserName: string
-  funds: Fund[]
-  gatherings: Gathering[]
+  activeGroupName: string
+  amountOwedToUser: number
+  amountOwedByUser: number
   history: FundActivity[]
 }) {
-  const totalBalance = currentFunds.reduce((sum, fund) => sum + fund.balance, 0)
-  const memberCount = currentFunds.reduce((sum, fund) => sum + fund.members, 0)
-  const upcomingGatherings = currentGatherings.length
   return (
     <>
-      <section className="welcome-row">
+      <section className="overview-welcome">
         <div>
           <div className="date-line"><CalendarDays size={15} /> نسق · مساحة مجموعاتك</div>
           <h1>هلا {currentUserName} <span>👋</span></h1>
-          <p>هذه لمحة عن مجموعاتك وأرصدتها والجمعات القادمة.</p>
+          <p>ملخص سريع لحسابك في المجموعة النشطة.</p>
+          <button className="button-primary welcome-cta" onClick={onStartGroup}><Plus size={16} /> ابدأ مجموعة</button>
         </div>
-        <button className="button-primary welcome-cta" onClick={() => onNavigate('funds')}><UsersRound size={17} /> مجموعاتي</button>
-      </section>
-
-      <section className="stats-grid" aria-label="ملخص الحساب">
-        <StatCard icon={Wallet} color="green" label="رصيد مجموعاتك" amount={money(totalBalance)} suffix="ر.س" note={`${currentFunds.length} مجموعة`} trend="مسجّل" />
-        <StatCard icon={UsersRound} color="peach" label="عضويات المجموعات" amount={money(memberCount)} suffix="عضوية" note="بحسب بيانات Firestore" trend="أعضاء" />
-        <StatCard icon={ArrowDownLeft} color="lavender" label="المجموعات" amount={money(currentFunds.length)} suffix="مجموعة" note="المجموعات التي تنتمي إليها" trend="محدّثة" />
-        <StatCard icon={CalendarDays} color="blue" label="الجمعات القادمة" amount={money(upcomingGatherings)} suffix="جمعات" note="في المجموعة الحالية" trend="قريبًا" />
-      </section>
-
-      <section className="content-grid">
-        <div className="panel expenses-panel">
-          <div className="panel-heading">
-            <div><h2>آخر العمليات</h2><p>العمليات المسجلة في المجموعة الحالية</p></div>
-            <button className="text-button" onClick={() => onNavigate('activity')}>عرض الكل <ArrowUpLeft size={15} /></button>
+        <div className="overview-balance" aria-label={`ملخص المستحقات في ${activeGroupName}`}>
+          <div className="overview-balance-heading"><span>المجموعة النشطة</span><strong>{activeGroupName}</strong></div>
+          <div className="overview-balance-items">
+            <div className="overview-balance-item owed-to-user"><span>إجمالي ما لك</span><strong>{money(amountOwedToUser)} <small>ر.س</small></strong></div>
+            <div className="overview-balance-item owed-by-user"><span>إجمالي ما عليك</span><strong>{money(amountOwedByUser)} <small>ر.س</small></strong></div>
           </div>
-          {history.length ? <ActivityRows compact history={history.slice(0, 3)} /> : <p className="empty-expenses">لا توجد عمليات مسجلة في هذه المجموعة بعد.</p>}
-        </div>
-
-        <div className="panel upcoming-panel">
-          <div className="panel-heading">
-            <div><h2>ابدأ مجموعة</h2><p>أنشئ مجموعة أو انضم برمز دعوة.</p></div>
-            <button className="icon-button mini" aria-label="عرض التقويم"><CalendarDays size={17} /></button>
-          </div>
-          <button className="panel-link" onClick={() => onNavigate('funds')}>عرض المجموعات <ArrowUpLeft size={15} /></button>
         </div>
       </section>
 
-      <section className="section-block">
-        <div className="panel-heading section-heading">
-          <div><h2>مجموعاتك</h2><p>المجموعات التي أنت عضو فيها</p></div>
-          <button className="text-button" onClick={() => onNavigate('funds')}>عرض الكل <ArrowUpLeft size={15} /></button>
-        </div>
-        <div className="fund-cards">
-          {currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}
-          {!currentFunds.length && <p className="empty-expenses">لا توجد مجموعات لعرضها. أنشئ مجموعة أو انضم إلى واحدة باستخدام رمز دعوة.</p>}
-        </div>
+      <section className="overview-shortcuts" aria-label="الوصول السريع">
+        <button className="overview-shortcut shortcut-fund" onClick={() => onNavigate('funds')}>
+          <span className="overview-shortcut-icon"><Wallet size={22} /></span>
+          <span><strong>الصندوق</strong><small>للمصاريف المستمرة والسلف</small></span>
+          <ArrowUpLeft size={17} />
+        </button>
+        <button className="overview-shortcut shortcut-gatherings" onClick={() => onNavigate('gatherings')}>
+          <span className="overview-shortcut-icon"><UsersRound size={22} /></span>
+          <span><strong>الجمعات</strong><small>للمناسبات والطلعات المؤقتة</small></span>
+          <ArrowUpLeft size={17} />
+        </button>
+        <button className="overview-shortcut shortcut-split" onClick={() => onNavigate('split')}>
+          <span className="overview-shortcut-icon"><ArrowLeftRight size={22} /></span>
+          <span><strong>القسمة السريعة</strong><small>لتوزيع فاتورة لحظية</small></span>
+          <ArrowUpLeft size={17} />
+        </button>
       </section>
 
-      <section className="bottom-grid">
-        <div className="panel gatherings-panel">
-          <div className="panel-heading">
-            <div><h2>جمعاتك القادمة</h2><p>خطّط لها من بدري</p></div>
-            <button className="text-button" onClick={() => onNavigate('gatherings')}>كل الجمعات <ArrowUpLeft size={15} /></button>
-          </div>
-          {currentGatherings.slice(0, 1).map((gathering) => (
-            <div className="gathering-preview" key={gathering.title}>
-              <div className="gathering-emoji">{gathering.icon}</div>
-              <div className="gathering-info"><strong>{gathering.title}</strong><span><CalendarDays size={13} /> {gathering.date} <i /> {gathering.attendees} أكدوا حضورهم</span></div>
-              <span className="pill green-pill">{gathering.badge}</span>
-            </div>
-          ))}
-          {!currentGatherings.length && <p className="empty-expenses">لا توجد جمعات مسجلة في المجموعة الحالية.</p>}
+      <section className="panel overview-activity">
+        <div className="panel-heading">
+          <div><h2>آخر العمليات</h2><p>أحدث العمليات المسجلة في المجموعة النشطة</p></div>
+          <button className="text-button" onClick={() => onNavigate('activity')}>عرض الكل <ArrowUpLeft size={15} /></button>
         </div>
-        <div className="tip-card">
-          <span className="tip-icon"><Sparkles size={18} /></span>
-          <span className="tip-eyebrow">نصيحة نسق</span>
-          <h3>الوضوح يخلّي الوناسة تدوم</h3>
-          <p>سجّل المصروف وقت حدوثه، وتعرّف على حصة كل عضو بسهولة.</p>
-          <button onClick={() => onNavigate('split')}>جرّب القسمة السريعة <ArrowUpLeft size={15} /></button>
-          <span className="tip-decoration">ق</span>
+        <div className="overview-table-wrap">
+          <table className="overview-activity-table">
+            <thead><tr><th>العملية</th><th>التفاصيل</th><th>المبلغ</th><th>الوقت</th></tr></thead>
+            <tbody>
+              {history.slice(0, 3).map((item) => <tr key={item.id}>
+                <td>{item.title}</td><td>{item.detail}</td><td>{item.amount}</td><td>{item.time}</td>
+              </tr>)}
+              {!history.length && <tr><td colSpan={4}>لا توجد عمليات مسجلة في المجموعة النشطة بعد.</td></tr>}
+            </tbody>
+          </table>
         </div>
       </section>
     </>
@@ -1578,7 +1601,7 @@ function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
     <button className="fund-card" onClick={onClick}>
       <div className="fund-card-top"><span className={`fund-emoji ${fund.color}`}>{fund.icon}</span><span className="fund-menu-dots">•••</span></div>
       <strong className="fund-title">{fund.title}</strong>
-      <span className="fund-members"><UsersRound size={14} /> {fund.members} أعضاء</span>
+      <span className="fund-members"><UsersRound size={14} /> {formatNumber(fund.members)} أعضاء</span>
       <div className="fund-balance"><span>الرصيد المحاسبي</span><strong>{money(fund.balance)} <small>ر.س</small></strong></div>
       <div className="fund-due"><CalendarDays size={13} /> {fund.due}</div>
     </button>
@@ -1735,12 +1758,12 @@ function FundsView({
           <div className="goal-heading"><span><strong>هدف التحصيل الشهري</strong><small>قطية أكتوبر · {currentRequest?.title ?? 'لا توجد قطية نشطة'}</small></span><strong>{Math.round(Math.min(collectedAmount / goal, 1) * 100)}<small>%</small></strong></div>
           <div className="goal-track"><span style={{ width: `${Math.min(collectedAmount / goal, 1) * 100}%` }} /></div>
           <div className="goal-amounts"><span>تم تحصيل <strong>{money(collectedAmount)} ر.س</strong></span><span>الهدف <strong>{money(goal)} ر.س</strong></span></div>
-          <div className="balance-mini-stats"><span><Check size={14} /> {paidContributions.length} دفعوا</span><span><Clock3 size={14} /> {awaitingContributions.length} بانتظار الاعتماد</span><span><CalendarDays size={14} /> {money(totalDue)} ر.س التزامات قادمة</span></div>
+          <div className="balance-mini-stats"><span><Check size={14} /> {formatNumber(paidContributions.length)} دفعوا</span><span><Clock3 size={14} /> {formatNumber(awaitingContributions.length)} بانتظار الاعتماد</span><span><CalendarDays size={14} /> {money(totalDue)} ر.س التزامات قادمة</span></div>
         </div>
       </section>
 
       {workspace && <section className="panel workspace-members-panel">
-        <div className="panel-heading"><div><h2>أعضاء المجموعة</h2><p>{workspace.members} أعضاء</p></div><UsersRound size={19} /></div>
+        <div className="panel-heading"><div><h2>أعضاء المجموعة</h2><p>{formatNumber(workspace.members)} أعضاء</p></div><UsersRound size={19} /></div>
         <div className="workspace-members">
           {workspace.memberNames.map((name) => <span className="workspace-member" key={name}><span className={`person-avatar person-${name.length % 4}`}>{name.slice(0, 1)}</span>{name}</span>)}
         </div>
@@ -1768,7 +1791,7 @@ function FundsView({
       )}
 
       <section className="panel kattah-panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{canManageGroup && awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({awaitingContributions.length})</button>}</div></div>
+        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{canManageGroup && awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({formatNumber(awaitingContributions.length)})</button>}</div></div>
         {currentRequest ? (
           <>
             <div className="contribution-primary-action">
@@ -1780,13 +1803,13 @@ function FundsView({
             <div className="request-summary">
               <span><strong>{currentRequest.title}</strong><small>الاستحقاق {currentRequest.due}</small></span>
               <span><strong>{money(currentRequest.total)} ر.س</strong><small>الحصة المتوقعة لكل عضو</small></span>
-              <span><strong>{paidContributions.length} من {currentRequest.contributions.length}</strong><small>تأكيدات معتمدة</small></span>
+              <span><strong>{formatNumber(paidContributions.length)} من {formatNumber(currentRequest.contributions.length)}</strong><small>تأكيدات معتمدة</small></span>
             </div>
             <div className="contribution-list">
               {sortedContributions.map((contribution) => (
                 <div className="contribution-row" key={`${currentRequest.id}-${contribution.name}`}>
                   <span className={`person-avatar person-${contribution.name.length % 4}`}>{contribution.name.slice(0, 1)}</span>
-                  <span className="contribution-name"><strong>{confirmationRanks.has(contribution.name) && `${confirmationRanks.get(contribution.name)}- `}{contribution.name}{contribution.name === firstConfirmer && <span className="first-confirmer-badge">⚡ أول المسددين</span>}</strong><small>{money(contribution.amount)} ر.س</small></span>
+                  <span className="contribution-name"><strong>{confirmationRanks.has(contribution.name) && `${formatNumber(confirmationRanks.get(contribution.name) ?? 0)}- `}{contribution.name}{contribution.name === firstConfirmer && <span className="first-confirmer-badge">⚡ أول المسددين</span>}</strong><small>{money(contribution.amount)} ر.س</small></span>
                   <PaymentBadge status={contribution.status} />
                   {contribution.status === 'unpaid' && <span className="member-waiting">بانتظار العضو</span>}
                   {contribution.status === 'rejected' && contribution.uid !== currentUserId && <span className="member-waiting">لم تُستلم الحوالة</span>}
@@ -1837,7 +1860,7 @@ function FundsView({
       </section>
 
       {!workspace && <section className="section-block">
-        <div className="panel-heading section-heading"><div><h2>كل الصناديق</h2><p>مساحات المصروفات المشتركة في حسابك</p></div><div className="filter-pills"><button className="selected">الكل <span>{currentFunds.length}</span></button><button>نشطة</button></div></div>
+        <div className="panel-heading section-heading"><div><h2>كل الصناديق</h2><p>مساحات المصروفات المشتركة في حسابك</p></div><div className="filter-pills"><button className="selected">الكل <span>{formatNumber(currentFunds.length)}</span></button><button>نشطة</button></div></div>
         <div className="fund-cards fund-cards-large">{currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}</div>
       </section>
       }
@@ -1893,7 +1916,7 @@ function GatheringsView({
   const [taskTitle, setTaskTitle] = useState('')
   const notifiedDeadlines = useRef(new Set<string>())
   const isEnglish = language === 'en'
-  const formatMoney = (value: number) => new Intl.NumberFormat(isEnglish ? 'en-SA' : 'ar-SA', { maximumFractionDigits: 2 }).format(value)
+  const formatMoney = (value: number) => formatNumber(value, isEnglish ? 'en-SA' : 'ar-SA')
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -1995,9 +2018,9 @@ function GatheringsView({
                 <strong>{countdown}</strong>
                 {!closed && <small>{isEnglish ? `Deadline ${deadlineLabel}` : `الإغلاق ${deadlineLabel}`}</small>}
               </div>
-              {closed && <div className="organizer-notice"><Bell size={14} /> {isEnglish ? `${joined.length} confirmed attendee${joined.length === 1 ? '' : 's'} — notify the organizer` : `تأكيد العدد النهائي: ${joined.length} مشارك · أبلغ المنشئ`}</div>}
+              {closed && <div className="organizer-notice"><Bell size={14} /> {isEnglish ? `${formatNumber(joined.length, 'en-SA')} confirmed attendee${joined.length === 1 ? '' : 's'} — notify the organizer` : `تأكيد العدد النهائي: ${formatNumber(joined.length)} مشارك · أبلغ المنشئ`}</div>}
               <div className="attendee-block">
-                <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{joined.length} <small>/ {gathering.participants.length}</small></strong></div>
+                <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{formatNumber(joined.length, isEnglish ? 'en-SA' : 'ar-SA')} <small>/ {formatNumber(gathering.participants.length, isEnglish ? 'en-SA' : 'ar-SA')}</small></strong></div>
                 <div className="progress-track"><span style={{ width: `${gathering.participants.length ? (joined.length / gathering.participants.length) * 100 : 0}%` }} /></div>
                 <div className="participant-chips">{gathering.participants.filter((person) => person.decision === 'joined' || person.name === gathering.createdByName).map((person) => <span className={person.name === gathering.createdByName ? 'creator-chip' : ''} key={person.name} title={person.name === gathering.createdByName ? `${isEnglish ? 'Organizer' : 'المنشئ'}: ${person.name}` : person.late ? (isEnglish ? 'Added after RSVP closed' : 'أُضيف بعد إغلاق التصويت') : person.name}>{person.name.slice(0, 1)}<small>{person.name}</small>{person.name === gathering.createdByName && <i aria-hidden="true">👑</i>}{person.late && <i>+</i>}</span>)}</div>
               </div>
@@ -2055,7 +2078,7 @@ function GatheringsView({
             </div>
           </div>
           <section className="gathering-tasks" aria-labelledby="gathering-tasks-heading">
-            <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{selectedGathering.tasks.length}</span></div>
+            <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{formatNumber(selectedGathering.tasks.length, isEnglish ? 'en-SA' : 'ar-SA')}</span></div>
             {selectedGathering.createdById === currentUserId && <form className="task-entry-form" onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; onAddTask(selectedGathering.id, taskTitle); setTaskTitle('') }}><label className="modal-field"><span>{isEnglish ? 'New task' : 'مهمة جديدة'}</span><input required value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={isEnglish ? 'e.g. Bring drinks' : 'مثال: شراء المشروبات'} /></label><button className="button-outline" type="submit"><Plus size={15} /> {isEnglish ? 'Add task' : 'إضافة مهمة'}</button></form>}
             <div className="gathering-task-list">{selectedGathering.tasks.map((task) => {
               const currentMemberJoined = selectedGathering.participants.some((person) => person.uid === currentUserId && person.decision === 'joined')
@@ -2164,7 +2187,7 @@ function SplitView({ amount, people, shares, customShares, splitMatches, splitTo
           <div className="split-step-heading"><span className="step-number">١</span><div><h2>كم إجمالي المبلغ؟</h2><p>المبلغ اللي اندفع أو ودّكم تقسّمونه</p></div></div>
           <label className="amount-input-wrap"><input inputMode="decimal" type="number" min="0" step="0.01" value={amount} onChange={(event) => onAmountChange(event.target.value)} aria-label="إجمالي المبلغ" /><span>ر.س</span></label>
           <div className="split-divider" />
-          <div className="split-step-heading"><span className="step-number">٢</span><div><h2>مين يشارك بالقسمة؟</h2><p>{people.length} أشخاص · اضغط على الاسم لتعديله</p></div></div>
+          <div className="split-step-heading"><span className="step-number">٢</span><div><h2>مين يشارك بالقسمة؟</h2><p>{formatNumber(people.length)} أشخاص · اضغط على الاسم لتعديله</p></div></div>
           <div className="people-list">
             {people.map((person, index) => (
               <div className="person-row" key={`${index}-${person}`}>
@@ -2186,7 +2209,7 @@ function SplitView({ amount, people, shares, customShares, splitMatches, splitTo
             <span className="summary-total-label">إجمالي المصروف</span>
             <strong className="summary-total">{money(total)} <small>ر.س</small></strong>
             <div className="summary-line" />
-            <div className="summary-row"><span>عدد المشاركين</span><strong>{people.length} أشخاص</strong></div>
+            <div className="summary-row"><span>عدد المشاركين</span><strong>{formatNumber(people.length)} أشخاص</strong></div>
             <div className="summary-row"><span>{customShares ? 'مجموع الحصص' : 'حصة كل شخص'}</span><strong>{money(customShares ? splitTotal : evenShare)} <small>ر.س</small></strong></div>
             {customShares && !splitMatches && <div className="split-warning"><CircleAlert size={15} /> مجموع الحصص لا يطابق إجمالي المبلغ</div>}
             {customShares && splitMatches && <div className="split-valid"><CircleCheck size={15} /> مجموع الحصص يطابق إجمالي المبلغ</div>}
@@ -2211,7 +2234,7 @@ function ActivityView({ onNavigate, history }: { onNavigate: (view: View) => voi
         <StatCard icon={UsersRound} color="blue" label="الأنشطة" amount={money(history.filter((item) => item.kind === 'event').length)} suffix="عملية" note="في المجموعة الحالية" trend="محدّثة" />
       </section>
       <section className="panel table-panel activity-table-panel">
-        <div className="panel-heading"><div><h2>كل العمليات</h2><p>سجل المجموعة المالي</p></div><div className="filter-pills"><button className="selected">الكل <span>{history.length}</span></button></div></div>
+        <div className="panel-heading"><div><h2>كل العمليات</h2><p>سجل المجموعة المالي</p></div><div className="filter-pills"><button className="selected">الكل <span>{formatNumber(history.length)}</span></button></div></div>
         <ActivityRows history={history} />
       </section>
       <div className="important-note"><ShieldCheck size={18} /><p><strong>عن التحويلات الخارجية</strong><span>تسجيل المحصّل للدفع لا يعني وصول التحويل. يكتمل السجل بعد تأكيد المستفيد استلامه، ويمكنه الاعتراض عند الحاجة.</span></p></div>
