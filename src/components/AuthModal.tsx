@@ -52,14 +52,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  const handleModeSwitch = (mode: 'login' | 'register' | 'reset') => {
+    setError('');
+    setMessage('');
+    if (mode === 'reset') {
+      setIsResetting(true);
+      setIsRegistering(false);
+    } else if (mode === 'register') {
+      setIsResetting(false);
+      setIsRegistering(true);
+    } else {
+      setIsResetting(false);
+      setIsRegistering(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in" dir="rtl">
-      <div className="relative w-full max-w-md overflow-hidden bg-white shadow-2xl rounded-2xl border border-slate-100">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto" 
+      dir="rtl"
+    >
+      <div 
+        className="relative w-full max-w-md overflow-hidden bg-white shadow-2xl rounded-2xl border border-slate-100 my-auto z-10"
+        onClick={(e) => e.stopPropagation()}
+      >
         
         {/* زر الإغلاق */}
         <button
           onClick={onClose}
-          className="absolute top-4 left-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+          type="button"
+          className="absolute top-4 left-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors z-20"
           aria-label="إغلاق"
         >
           <X className="w-5 h-5" />
@@ -100,11 +122,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* الحقل الأول: البريد الإلكتروني */}
+          {/* البريد الإلكتروني */}
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-600">البريد الإلكتروني</label>
+            <label className="block text-xs font-semibold text-slate-600 text-right">البريد الإلكتروني</label>
             <div className="relative">
-              <Mail className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+              <Mail className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
               <input
                 type="email"
                 required
@@ -116,15 +138,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
 
-          {/* الحقل الثاني: كلمة المرور (يختفي في حالة نسيت كلمة المرور) */}
+          {/* كلمة المرور */}
           {!isResetting && (
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-slate-600">كلمة المرور</label>
+                <label className="block text-xs font-semibold text-slate-600">كلمة المرور</label>
                 {!isRegistering && (
                   <button
                     type="button"
-                    onClick={() => { setIsResetting(true); setError(''); setMessage(''); }}
+                    onClick={() => handleModeSwitch('reset')}
                     className="text-xs font-medium text-emerald-600 hover:underline"
                   >
                     نسيت كلمة المرور؟
@@ -132,7 +154,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 )}
               </div>
               <div className="relative">
-                <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
                 <input
                   type="password"
                   required
@@ -149,7 +171,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium rounded-xl shadow-sm hover:shadow transition-all disabled:opacity-50 text-sm flex items-center justify-center gap-2 mt-2"
+            className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium rounded-xl shadow-sm hover:shadow transition-all disabled:opacity-50 text-sm flex items-center justify-center gap-2 mt-2 cursor-pointer"
           >
             {loading ? (
               <span className="inline-block w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -167,7 +189,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {isResetting ? (
               <button
                 type="button"
-                onClick={() => { setIsResetting(false); setError(''); setMessage(''); }}
+                onClick={() => handleModeSwitch('login')}
                 className="text-xs font-medium text-slate-500 hover:text-slate-800"
               >
                 العودة إلى تسجيل الدخول
@@ -177,7 +199,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 {isRegistering ? 'لديك حساب بالفعل؟' : 'ليس لديك حساب؟'}{' '}
                 <button
                   type="button"
-                  onClick={() => { setIsRegistering(!isRegistering); setError(''); setMessage(''); }}
+                  onClick={() => handleModeSwitch(isRegistering ? 'login' : 'register')}
                   className="font-bold text-emerald-600 hover:underline"
                 >
                   {isRegistering ? 'تسجيل الدخول' : 'أنشئ حساباً الآن'}

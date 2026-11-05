@@ -18,6 +18,96 @@ service cloud.firestore {
         && get(memberPath(groupId, request.auth.uid)).data.role in ['owner', 'admin'];
     }
 
+    function validContribution(groupId, contribution) {
+      return contribution is map
+        && contribution.keys().hasAll(['uid', 'name', 'amount', 'status'])
+        && contribution.keys().hasOnly(['uid', 'name', 'amount', 'status'])
+        && contribution.uid is string
+        && contribution.name is string
+        && contribution.name.size() > 0
+        && contribution.amount is number
+        && contribution.amount > 0
+        && contribution.status == 'unpaid'
+        && exists(memberPath(groupId, contribution.uid));
+    }
+
+    function validContributionAt(groupId, contributions, index) {
+      return contributions.size() <= index
+        || validContribution(groupId, contributions[index]);
+    }
+
+    function contributionAmountAt(contributions, index) {
+      return contributions.size() > index ? contributions[index].amount : 0;
+    }
+
+    function validContributions(groupId, contributions, total) {
+      let sum = contributionAmountAt(contributions, 0)
+        + contributionAmountAt(contributions, 1)
+        + contributionAmountAt(contributions, 2)
+        + contributionAmountAt(contributions, 3)
+        + contributionAmountAt(contributions, 4)
+        + contributionAmountAt(contributions, 5)
+        + contributionAmountAt(contributions, 6)
+        + contributionAmountAt(contributions, 7)
+        + contributionAmountAt(contributions, 8)
+        + contributionAmountAt(contributions, 9)
+        + contributionAmountAt(contributions, 10)
+        + contributionAmountAt(contributions, 11)
+        + contributionAmountAt(contributions, 12)
+        + contributionAmountAt(contributions, 13)
+        + contributionAmountAt(contributions, 14)
+        + contributionAmountAt(contributions, 15)
+        + contributionAmountAt(contributions, 16)
+        + contributionAmountAt(contributions, 17)
+        + contributionAmountAt(contributions, 18)
+        + contributionAmountAt(contributions, 19)
+        + contributionAmountAt(contributions, 20)
+        + contributionAmountAt(contributions, 21)
+        + contributionAmountAt(contributions, 22)
+        + contributionAmountAt(contributions, 23)
+        + contributionAmountAt(contributions, 24)
+        + contributionAmountAt(contributions, 25)
+        + contributionAmountAt(contributions, 26)
+        + contributionAmountAt(contributions, 27)
+        + contributionAmountAt(contributions, 28)
+        + contributionAmountAt(contributions, 29);
+      return contributions is list
+        && contributions.size() > 0
+        && contributions.size() <= 30
+        && validContributionAt(groupId, contributions, 0)
+        && validContributionAt(groupId, contributions, 1)
+        && validContributionAt(groupId, contributions, 2)
+        && validContributionAt(groupId, contributions, 3)
+        && validContributionAt(groupId, contributions, 4)
+        && validContributionAt(groupId, contributions, 5)
+        && validContributionAt(groupId, contributions, 6)
+        && validContributionAt(groupId, contributions, 7)
+        && validContributionAt(groupId, contributions, 8)
+        && validContributionAt(groupId, contributions, 9)
+        && validContributionAt(groupId, contributions, 10)
+        && validContributionAt(groupId, contributions, 11)
+        && validContributionAt(groupId, contributions, 12)
+        && validContributionAt(groupId, contributions, 13)
+        && validContributionAt(groupId, contributions, 14)
+        && validContributionAt(groupId, contributions, 15)
+        && validContributionAt(groupId, contributions, 16)
+        && validContributionAt(groupId, contributions, 17)
+        && validContributionAt(groupId, contributions, 18)
+        && validContributionAt(groupId, contributions, 19)
+        && validContributionAt(groupId, contributions, 20)
+        && validContributionAt(groupId, contributions, 21)
+        && validContributionAt(groupId, contributions, 22)
+        && validContributionAt(groupId, contributions, 23)
+        && validContributionAt(groupId, contributions, 24)
+        && validContributionAt(groupId, contributions, 25)
+        && validContributionAt(groupId, contributions, 26)
+        && validContributionAt(groupId, contributions, 27)
+        && validContributionAt(groupId, contributions, 28)
+        && validContributionAt(groupId, contributions, 29)
+        && sum >= total - 0.001
+        && sum <= total + 0.001;
+    }
+
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
@@ -123,7 +213,22 @@ service cloud.firestore {
       match /transactions/{transactionId} {
         allow read: if isMember(groupId);
         allow create: if isMember(groupId)
-          && request.resource.data.workspaceId == groupId;
+          && request.resource.data.keys().hasAll([
+            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'contributions', 'createdBy'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'contributions', 'createdBy'
+          ])
+          && request.resource.data.id is number
+          && request.resource.data.workspaceId == groupId
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.cadence is string
+          && request.resource.data.due is string
+          && request.resource.data.total is number
+          && request.resource.data.total > 0
+          && validContributions(groupId, request.resource.data.contributions, request.resource.data.total);
         allow update, delete: if isManager(groupId);
 
         match /confirmations/{memberUid} {

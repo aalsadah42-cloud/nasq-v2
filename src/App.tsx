@@ -14,7 +14,7 @@ import type { DocumentData } from 'firebase/firestore'
 import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
 import { auth } from './lib/firebase'
 import { createGroup, getUserGroups, joinGroup, type UserGroup } from './lib/groups'
-import { AuthModal } from './components/AuthModal'
+import { AuthModal } from './components/AuthModal'; //
 import { GroupSettingsModal } from './components/GroupSettingsModal'
 import { ProfileSettingsModal } from './components/ProfileSettingsModal'
 import { getUserProfile, type PaymentMethod } from './lib/userProfile'
@@ -1085,6 +1085,10 @@ function App() {
   }
 
   const createKattahRequest = (workspaceId: string, title: string, total: number, cadence: string, due: string) => {
+    if (!currentUser) {
+      showFundMessage('يجب تسجيل الدخول لإنشاء طلب مساهمة.')
+      return
+    }
     const members = userGroups.find((group) => group.id === workspaceId)?.members ?? []
     if (!members.length) {
       showFundMessage('لا يوجد أعضاء في المجموعة لتوزيع المساهمة عليهم.')
@@ -1097,7 +1101,7 @@ function App() {
       amount: index === members.length - 1 ? Math.round((total - share * (members.length - 1)) * 100) / 100 : share,
       status: 'unpaid' as const,
     }))
-    const request = { id: Date.now(), workspaceId, title, cadence, total, due, contributions }
+    const request = { id: Date.now(), workspaceId, createdBy: currentUser.uid, title, cadence, total, due, contributions }
     if (hasFirebaseConfig) {
       void import('./fundPaymentSync').then(({ createSyncedRequest }) => createSyncedRequest(workspaceId, request)).then(() => {
         addFundActivity(workspaceId, 'إنشاء طلب قطية', `${title} · ${cadence} · ${due}`, `${money(total)} ر.س`)

@@ -18,6 +18,7 @@ import {
   approveAllSyncedContributions,
   decideSyncedContribution,
   mutateSyncedGathering,
+  createSyncedRequest,
   type SyncedKattahRequest,
 } from '../src/fundPaymentSync'
 import { joinGroup } from '../src/lib/groups'
@@ -65,6 +66,7 @@ beforeEach(async () => {
       setDoc(doc(firestore, 'groups/group-a/transactions/1'), {
         id: 1,
         workspaceId: 'group-a',
+        createdBy: 'owner-a',
         title: 'Monthly contribution',
         cadence: 'monthly',
         total: 30,
@@ -138,6 +140,57 @@ test('members can read only their own group, and cannot manage balances or contr
   await assertFails(getDoc(doc(otherGroupDb, groupPath('group-a'))))
   await assertFails(getDoc(doc(otherGroupDb, 'groups/group-a/gatherings/gathering-1')))
   await assertFails(getDoc(doc(memberDb, groupPath('group-b'))))
+})
+
+test('new contribution requests require the creator, valid unpaid shares, and a matching total', async () => {
+  const memberDb = environment.authenticatedContext('member-a').firestore()
+  const request: SyncedKattahRequest = {
+    id: 2,
+    workspaceId: 'group-a',
+    createdBy: 'member-a',
+    title: 'Shared meal',
+    cadence: 'once',
+    total: 30,
+    due: '2026-12-01',
+    contributions: [
+      { uid: 'member-a', name: 'Member A', amount: 10, status: 'unpaid' },
+      { uid: 'member-c', name: 'Member C', amount: 20, status: 'unpaid' },
+    ],
+  }
+
+  await assertSucceeds(createSyncedRequest('group-a', request, memberDb))
+
+  for (const [id, status] of [[3, 'paid'], [4, 'rejected']] as const) {
+    await assertFails(setDoc(doc(memberDb, `groups/group-a/transactions/${id}`), {
+      ...request,
+      id,
+      contributions: request.contributions.map((contribution, index) => ({
+        ...contribution,
+        status: index === 0 ? status : contribution.status,
+      })),
+    }))
+  }
+  await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/5'), {
+    ...request,
+    id: 5,
+    total: 31,
+  }))
+  await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/6'), {
+    ...request,
+    id: 6,
+    createdBy: 'member-c',
+  }))
+  await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/7'), {
+    ...request,
+    id: 7,
+    total: 11,
+    contributions: Array.from({ length: 11 }, (_, index) => ({
+      uid: index % 2 === 0 ? 'member-a' : 'member-c',
+      name: index % 2 === 0 ? 'Member A' : 'Member C',
+      amount: 1,
+      status: 'unpaid',
+    })),
+  }))
 })
 
 test('invitees can join through an invite without being able to read the group beforehand', async () => {

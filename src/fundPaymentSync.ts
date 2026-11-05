@@ -22,6 +22,7 @@ export type SyncedContribution = {
 export type SyncedKattahRequest = {
   id: number
   workspaceId: string
+  createdBy?: string
   title: string
   cadence: string
   total: number
@@ -69,6 +70,7 @@ const decodeRequest = (id: string, value: Record<string, unknown>, groupId: stri
   return {
     id: typeof value.id === 'number' ? value.id : Number(id),
     workspaceId: value.workspaceId,
+    ...(typeof value.createdBy === 'string' ? { createdBy: value.createdBy } : {}),
     title: value.title,
     cadence: value.cadence,
     total: value.total,
