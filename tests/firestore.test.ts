@@ -16,12 +16,13 @@ import {
 } from 'firebase/firestore'
 import {
   approveAllSyncedContributions,
+  confirmSyncedContribution,
   decideSyncedContribution,
   mutateSyncedGathering,
   createSyncedRequest,
   type SyncedKattahRequest,
 } from '../src/fundPaymentSync'
-import { joinGroup } from '../src/lib/groups'
+import { createGroup, joinGroup, leaveGroup, removeGroupMember } from '../src/lib/groups'
 import {
   approveSyncedObligationPayment,
   decideSyncedReimbursement,
@@ -49,16 +50,21 @@ beforeEach(async () => {
   await environment.withSecurityRulesDisabled(async (context) => {
     const firestore = context.firestore()
     const writes: Promise<unknown>[] = [
-      setDoc(doc(firestore, groupPath('group-a')), { name: 'Group A', createdBy: 'owner-a' }),
-      setDoc(doc(firestore, groupPath('group-b')), { name: 'Group B', createdBy: 'owner-b' }),
+      setDoc(doc(firestore, groupPath('group-a')), {
+        name: 'Group A',
+        createdBy: 'owner-a',
+        memberUids: ['owner-a', 'admin-a', 'member-a', 'member-c'],
+      }),
+      setDoc(doc(firestore, groupPath('group-b')), { name: 'Group B', createdBy: 'owner-b', memberUids: ['owner-b', 'member-b'] }),
       setDoc(doc(firestore, 'inviteCodes/ABCDEFG2'), {
         groupId: 'group-a',
         createdBy: 'owner-a',
+        memberCount: 4,
       }),
       setDoc(doc(firestore, 'groups/group-a/members/owner-a'), { uid: 'owner-a', role: 'owner', displayName: 'Owner A' }),
-      setDoc(doc(firestore, 'groups/group-a/members/admin-a'), { uid: 'admin-a', role: 'admin', displayName: 'Admin A' }),
-      setDoc(doc(firestore, 'groups/group-a/members/member-a'), { uid: 'member-a', role: 'member', displayName: 'Member A' }),
-      setDoc(doc(firestore, 'groups/group-a/members/member-c'), { uid: 'member-c', role: 'member', displayName: 'Member C' }),
+      setDoc(doc(firestore, 'groups/group-a/members/admin-a'), { uid: 'admin-a', role: 'admin', displayName: 'Admin A', joinedViaInviteCode: 'ABCDEFG2' }),
+      setDoc(doc(firestore, 'groups/group-a/members/member-a'), { uid: 'member-a', role: 'member', displayName: 'Member A', joinedViaInviteCode: 'ABCDEFG2' }),
+      setDoc(doc(firestore, 'groups/group-a/members/member-c'), { uid: 'member-c', role: 'member', displayName: 'Member C', joinedViaInviteCode: 'ABCDEFG2' }),
       setDoc(doc(firestore, 'groups/group-b/members/owner-b'), { uid: 'owner-b', role: 'owner', displayName: 'Owner B' }),
       setDoc(doc(firestore, 'groups/group-b/members/member-b'), { uid: 'member-b', role: 'member', displayName: 'Member B' }),
       setDoc(doc(firestore, 'groups/group-a/fund/group-a'), { groupId: 'group-a', balance: 100 }),
@@ -142,7 +148,7 @@ test('members can read only their own group, and cannot manage balances or contr
   await assertFails(getDoc(doc(memberDb, groupPath('group-b'))))
 })
 
-test('new contribution requests require the creator, valid unpaid shares, and a matching total', async () => {
+test('new contribution requests require the creator, valid participants, and a positive total', async () => {
   const memberDb = environment.authenticatedContext('member-a').firestore()
   const request: SyncedKattahRequest = {
     id: 2,
@@ -153,43 +159,43 @@ test('new contribution requests require the creator, valid unpaid shares, and a 
     total: 30,
     due: '2026-12-01',
     contributions: [
-      { uid: 'member-a', name: 'Member A', amount: 10, status: 'unpaid' },
-      { uid: 'member-c', name: 'Member C', amount: 20, status: 'unpaid' },
+      { uid: 'owner-a', name: 'Owner A', amount: 7.5, status: 'unpaid' },
+      { uid: 'admin-a', name: 'Admin A', amount: 7.5, status: 'unpaid' },
+      { uid: 'member-a', name: 'Member A', amount: 7.5, status: 'unpaid' },
+      { uid: 'member-c', name: 'Member C', amount: 7.5, status: 'unpaid' },
     ],
+  }
+  const requestData = {
+    id: request.id,
+    workspaceId: request.workspaceId,
+    createdBy: request.createdBy,
+    title: request.title,
+    cadence: request.cadence,
+    total: request.total,
+    due: request.due,
+    participantUids: request.contributions.map(({ uid }) => uid),
+    participantNames: Object.fromEntries(request.contributions.map(({ uid, name }) => [uid, name])),
   }
 
   await assertSucceeds(createSyncedRequest('group-a', request, memberDb))
-
-  for (const [id, status] of [[3, 'paid'], [4, 'rejected']] as const) {
-    await assertFails(setDoc(doc(memberDb, `groups/group-a/transactions/${id}`), {
-      ...request,
-      id,
-      contributions: request.contributions.map((contribution, index) => ({
-        ...contribution,
-        status: index === 0 ? status : contribution.status,
-      })),
-    }))
-  }
+  const savedRequest = await getDoc(doc(memberDb, 'groups/group-a/transactions/2'))
+  assert.deepEqual(savedRequest.data()?.participantUids, requestData.participantUids)
+  assert.equal(savedRequest.data()?.contributions, undefined)
   await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/5'), {
-    ...request,
+    ...requestData,
     id: 5,
-    total: 31,
+    total: 0,
   }))
   await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/6'), {
-    ...request,
+    ...requestData,
     id: 6,
     createdBy: 'member-c',
   }))
   await assertFails(setDoc(doc(memberDb, 'groups/group-a/transactions/7'), {
-    ...request,
+    ...requestData,
     id: 7,
-    total: 11,
-    contributions: Array.from({ length: 11 }, (_, index) => ({
-      uid: index % 2 === 0 ? 'member-a' : 'member-c',
-      name: index % 2 === 0 ? 'Member A' : 'Member C',
-      amount: 1,
-      status: 'unpaid',
-    })),
+    participantUids: ['member-a', 'outsider'],
+    participantNames: { 'member-a': 'Member A', outsider: 'Outsider' },
   }))
 })
 
@@ -206,6 +212,90 @@ test('invitees can join through an invite without being able to read the group b
   assert.equal(group.name, 'Group A')
   assert.equal(group.role, 'member')
   assert.equal((await getDoc(doc(inviteeDb, groupPath('group-a')))).exists(), true)
+  assert.equal((await getDoc(doc(inviteeDb, 'inviteCodes/ABCDEFG2'))).data()?.memberCount, 5)
+})
+
+test('new groups initialize membership tracking at one member', async () => {
+  const creatorDb = environment.authenticatedContext('new-owner').firestore()
+  const group = await createGroup('New group', {
+    uid: 'new-owner',
+    displayName: 'New Owner',
+    email: null,
+  }, creatorDb)
+
+  const groupSnapshot = await getDoc(doc(creatorDb, groupPath(group.id)))
+  assert.deepEqual(groupSnapshot.data()?.memberUids, ['new-owner'])
+  assert.equal((await getDoc(doc(creatorDb, `inviteCodes/${group.inviteCode}`))).data()?.memberCount, 1)
+})
+
+test('invite rules reject joining a group at the 30-member cap', async () => {
+  await environment.withSecurityRulesDisabled(async (context) => {
+    const firestore = context.firestore()
+    const writes = Array.from({ length: 26 }, (_, index) =>
+      setDoc(doc(firestore, `groups/group-a/members/extra-${index}`), {
+        uid: `extra-${index}`,
+        role: 'member',
+        displayName: `Extra ${index}`,
+        joinedViaInviteCode: 'ABCDEFG2',
+      }))
+    await Promise.all(writes)
+    await setDoc(doc(firestore, groupPath('group-a')), {
+      name: 'Group A',
+      createdBy: 'owner-a',
+      memberUids: ['owner-a', 'admin-a', 'member-a', 'member-c', ...Array.from({ length: 26 }, (_, index) => `extra-${index}`)],
+    })
+    await setDoc(doc(firestore, 'inviteCodes/ABCDEFG2'), {
+      groupId: 'group-a',
+      createdBy: 'owner-a',
+      memberCount: 30,
+    })
+  })
+
+  const inviteeDb = environment.authenticatedContext('blocked-member').firestore()
+  await assert.rejects(
+    joinGroup('ABCDEFG2', { uid: 'blocked-member', displayName: 'Blocked', email: null }, inviteeDb),
+    /وصلت المجموعة إلى الحد الأقصى وهو 30 عضوًا/,
+  )
+  await assertFails(setDoc(doc(inviteeDb, 'groups/group-a/members/blocked-member'), {
+    uid: 'blocked-member',
+    role: 'member',
+    displayName: 'Blocked',
+    joinedViaInviteCode: 'ABCDEFG2',
+  }))
+  assert.equal((await getDoc(doc(inviteeDb, 'inviteCodes/ABCDEFG2'))).data()?.memberCount, 30)
+
+  const memberDb = environment.authenticatedContext('member-a').firestore()
+  const memberUids = ['owner-a', 'admin-a', 'member-a', 'member-c', ...Array.from({ length: 26 }, (_, index) => `extra-${index}`)]
+  await createSyncedRequest('group-a', {
+    id: 8,
+    workspaceId: 'group-a',
+    createdBy: 'member-a',
+    title: 'Group contribution',
+    cadence: 'once',
+    total: 300,
+    due: '2026-12-01',
+    contributions: memberUids.map((uid) => ({ uid, name: uid, amount: 10, status: 'unpaid' })),
+  }, memberDb)
+  const request = await getDoc(doc(memberDb, 'groups/group-a/transactions/8'))
+  assert.equal(request.data()?.participantUids.length, 30)
+  await confirmSyncedContribution('group-a', 8, 'member-a', memberDb)
+  const managerDb = environment.authenticatedContext('admin-a').firestore()
+  await decideSyncedContribution('group-a', 8, 'member-a', 'paid', 0, managerDb)
+  const approvedRequest = await getDoc(doc(managerDb, 'groups/group-a/transactions/8'))
+  assert.equal(approvedRequest.data()?.contributionStatuses['member-a'], 'paid')
+})
+
+test('removing members and leaving decrement the invite membership counter', async () => {
+  const managerDb = environment.authenticatedContext('admin-a').firestore()
+  await removeGroupMember('group-a', 'member-c', managerDb)
+  assert.equal((await getDoc(doc(managerDb, 'inviteCodes/ABCDEFG2'))).data()?.memberCount, 3)
+
+  const memberDb = environment.authenticatedContext('member-a').firestore()
+  await leaveGroup('group-a', 'member-a', memberDb)
+  assert.equal((await getDoc(doc(managerDb, 'inviteCodes/ABCDEFG2'))).data()?.memberCount, 2)
+  await environment.withSecurityRulesDisabled(async (context) => {
+    assert.equal((await getDoc(doc(context.firestore(), 'groups/group-a/members/member-a'))).exists(), false)
+  })
 })
 
 test('concurrent contribution approvals serialize and credit the balance exactly once', async () => {

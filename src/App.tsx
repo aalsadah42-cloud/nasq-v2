@@ -13,7 +13,7 @@ import {
 import type { DocumentData } from 'firebase/firestore'
 import type { SyncedContribution, SyncedKattahRequest } from './fundPaymentSync'
 import { auth } from './lib/firebase'
-import { createGroup, getUserGroups, joinGroup, type UserGroup } from './lib/groups'
+import { createGroup, getUserGroups, joinGroup, MAX_GROUP_MEMBERS, type UserGroup } from './lib/groups'
 import { AuthModal } from './components/AuthModal'; //
 import { GroupSettingsModal } from './components/GroupSettingsModal'
 import { ProfileSettingsModal } from './components/ProfileSettingsModal'
@@ -1092,6 +1092,10 @@ function App() {
     const members = userGroups.find((group) => group.id === workspaceId)?.members ?? []
     if (!members.length) {
       showFundMessage('لا يوجد أعضاء في المجموعة لتوزيع المساهمة عليهم.')
+      return
+    }
+    if (members.length > MAX_GROUP_MEMBERS) {
+      showFundMessage('عذراً، لا يمكن إنشاء طلب قطية لمجموعة تضم أكثر من 30 مشاركاً.')
       return
     }
     const share = Math.floor((total / members.length) * 100) / 100

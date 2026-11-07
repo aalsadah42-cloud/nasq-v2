@@ -1,8 +1,9 @@
 import type { User } from 'firebase/auth'
 import {
+  arrayRemove,
+  arrayUnion,
   collection,
   collectionGroup,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -10,12 +11,15 @@ import {
   runTransaction,
   serverTimestamp,
   Timestamp,
+  type Transaction,
   updateDoc,
   where,
   writeBatch,
   type Firestore,
 } from 'firebase/firestore'
 import { db } from './firebase'
+
+export const MAX_GROUP_MEMBERS = 30
 
 export type GroupRole = 'owner' | 'admin' | 'member'
 
@@ -82,6 +86,7 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
           description: '',
           createdBy: user.uid,
           createdAt: serverTimestamp(),
+          memberUids: [user.uid],
         })
         transaction.set(memberRef, {
           uid: user.uid,
@@ -93,6 +98,7 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
           groupId: groupRef.id,
           createdBy: user.uid,
           createdAt: serverTimestamp(),
+          memberCount: 1,
         })
       })
       return {
@@ -189,6 +195,21 @@ export async function joinGroup(inviteCode: string, user: GroupUser, firestore: 
       throw new Error('رمز الدعوة غير صالح أو منتهي.')
     }
     if (currentMember.exists()) return true
+    const memberCount = currentInvite.data().memberCount
+    if (!Number.isInteger(memberCount) || memberCount < 1) {
+      throw new Error('تعذر التحقق من عدد أعضاء المجموعة. يلزم تحديث بيانات رمز الدعوة.')
+    }
+    if (memberCount >= MAX_GROUP_MEMBERS) {
+      throw new Error('وصلت المجموعة إلى الحد الأقصى وهو 30 عضوًا.')
+    }
+    transaction.update(groupRef, {
+      memberUids: arrayUnion(user.uid),
+      memberCountChangeUid: user.uid,
+    })
+    transaction.update(inviteRef, {
+      memberCount: memberCount + 1,
+      memberCountChangeUid: user.uid,
+    })
     transaction.set(memberRef, {
       uid: user.uid,
       displayName: displayNameFor(user),
@@ -270,15 +291,48 @@ export async function updateMemberRole(groupId: string, memberUid: string, role:
   await updateDoc(memberRef, { role })
 }
 
-export async function removeGroupMember(groupId: string, memberUid: string): Promise<void> {
-  const firestore = assertDb()
+export async function removeGroupMember(
+  groupId: string,
+  memberUid: string,
+  firestore: Firestore = assertDb(),
+): Promise<void> {
   const memberRef = doc(firestore, 'groups', groupId, 'members', memberUid)
-  const member = await getDoc(memberRef)
-  if (!member.exists()) throw new Error('تعذر العثور على العضو.')
-  if (roleFrom(member.data().role) === 'owner') {
-    throw new Error('لا يمكن إزالة مالك المجموعة. انقل الملكية أولًا.')
+  await runTransaction(firestore, async (transaction) => {
+    const member = await transaction.get(memberRef)
+    if (!member.exists()) throw new Error('تعذر العثور على العضو.')
+    if (roleFrom(member.data().role) === 'owner') {
+      throw new Error('لا يمكن إزالة مالك المجموعة. انقل الملكية أولًا.')
+    }
+    await decrementInviteMemberCount(transaction, member.data().joinedViaInviteCode, memberUid, firestore)
+    transaction.delete(memberRef)
+  })
+}
+
+async function decrementInviteMemberCount(
+  transaction: Transaction,
+  inviteCode: unknown,
+  memberUid: string,
+  firestore: Firestore,
+): Promise<void> {
+  if (typeof inviteCode !== 'string' || !inviteCode) {
+    throw new Error('تعذر تحديث عدد أعضاء المجموعة. يلزم تحديث بيانات عضوية العضو.')
   }
-  await deleteDoc(memberRef)
+  const inviteRef = doc(firestore, 'inviteCodes', inviteCode)
+  const invite = await transaction.get(inviteRef)
+  const inviteData = invite.data()
+  const memberCount = inviteData?.memberCount
+  if (!invite.exists() || typeof inviteData?.groupId !== 'string'
+    || !Number.isInteger(memberCount) || memberCount <= 1) {
+    throw new Error('تعذر تحديث عدد أعضاء المجموعة. يلزم تحديث بيانات رمز الدعوة.')
+  }
+  transaction.update(inviteRef, {
+    memberCount: memberCount - 1,
+    memberCountChangeUid: memberUid,
+  })
+  transaction.update(doc(firestore, 'groups', inviteData.groupId), {
+    memberUids: arrayRemove(memberUid),
+    memberCountChangeUid: memberUid,
+  })
 }
 
 export async function transferGroupOwnership(groupId: string, currentOwnerUid: string, newOwnerUid: string): Promise<void> {
@@ -309,8 +363,7 @@ export async function transferGroupOwnership(groupId: string, currentOwnerUid: s
   })
 }
 
-export async function leaveGroup(groupId: string, uid: string): Promise<void> {
-  const firestore = assertDb()
+export async function leaveGroup(groupId: string, uid: string, firestore: Firestore = assertDb()): Promise<void> {
   const groupRef = doc(firestore, 'groups', groupId)
   const memberRef = doc(groupRef, 'members', uid)
   await runTransaction(firestore, async (transaction) => {
@@ -324,6 +377,7 @@ export async function leaveGroup(groupId: string, uid: string): Promise<void> {
     if (groupSnapshot.data().createdBy === uid || memberSnapshot.data().role === 'owner') {
       throw new Error('انقل الملكية إلى عضو آخر أو احذف المجموعة قبل المغادرة.')
     }
+    await decrementInviteMemberCount(transaction, memberSnapshot.data().joinedViaInviteCode, uid, firestore)
     transaction.delete(memberRef)
   })
 }
@@ -357,14 +411,15 @@ export async function deleteGroup(groupId: string, ownerUid: string): Promise<vo
   const confirmationSnapshots = await Promise.all(transactionSnapshots.docs.map((transaction) =>
     getDocs(collection(transaction.ref, 'confirmations'))))
 
+  for (const member of memberSnapshots.docs) {
+    if (member.id !== ownerUid) await removeGroupMember(groupId, member.id)
+  }
+
   await deleteInChunks(confirmationSnapshots.flatMap((snapshot) => snapshot.docs.map((item) => item.ref)))
   await deleteInChunks(transactionSnapshots.docs.map((item) => item.ref))
   await deleteInChunks(gatheringSnapshots.docs.map((item) => item.ref))
   await deleteInChunks(fundSnapshots.docs.map((item) => item.ref))
   await deleteInChunks(inviteSnapshots.docs.map((item) => item.ref))
-  await deleteInChunks(memberSnapshots.docs
-    .filter((member) => member.id !== ownerUid)
-    .map((member) => member.ref))
 
   const finalBatch = writeBatch(firestore)
   finalBatch.delete(groupRef)

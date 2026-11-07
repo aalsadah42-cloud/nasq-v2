@@ -19,6 +19,10 @@ The app listens to the `gatherings`, `fundPaymentRequests`, and `fundBalances` c
 
 Firebase Auth supports account registration and sign-in, and group membership is stored under `groups/{groupId}/members`. Group settings support member roles, invite links, ownership transfer, leaving, and owner-only group deletion. Deploy the repository's `firestore.rules` before using a live project; client-side visibility checks are convenience only, and the rules enforce the actual permissions.
 
+Groups are limited to 30 members. The group document stores the member UID index used by contribution-request rules, and the invite-code document stores the membership counter; both are updated atomically with membership changes. Before deploying these rules to an existing project, backfill each group's `memberUids` and invite-code `memberCount` from actual member documents, and ensure each group has only one invite code. Do not allow joins until this trusted migration is complete. New groups initialize both automatically.
+
+New contribution requests snapshot participant IDs and names, with payment statuses stored as updates; per-member amounts are derived from the request total and participant count when read. Existing requests that already store explicit amounts and statuses remain supported.
+
 Profile details are stored in the signed-in user's `users/{uid}` document, which is readable and writable only by that account. Bank and transfer details are masked in settings and are not copied into group or gathering records; the full value is read only when the member explicitly copies settlement details for a direct transfer. Treat Firebase project access and administrative credentials as sensitive, and verify rule changes in the Firebase Emulator before deployment. Do not migrate demo data from `localStorage` into the live project as real payment or gathering records.
 
 Firebase Hosting is configured to build the Vite app into `dist` and use the `nassaq-ohqtgp-e2b7f` Hosting target in project `nassaq-ohqtgp`. After authenticating the Firebase CLI, deploy with `firebase deploy --only hosting:nassaq-ohqtgp-e2b7f`.

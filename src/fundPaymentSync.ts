@@ -50,6 +50,13 @@ const toMillis = (value: unknown): number | null => {
 }
 
 const decodeRequest = (id: string, value: Record<string, unknown>, groupId: string): SyncedKattahRequest => {
+  const requestTotal = value.total
+  if (typeof requestTotal !== 'number' || !Number.isFinite(requestTotal)) {
+    throw new Error(`بيانات طلب المساهمة ${id} غير صالحة.`)
+  }
+  const participantUids = Array.isArray(value.participantUids) ? value.participantUids : null
+  const legacyContributions = Array.isArray(value.contributions) ? value.contributions : null
+  const participantCount = participantUids?.length ?? legacyContributions?.length ?? 0
   if (
     (typeof value.id !== 'number' && !Number.isFinite(Number(id)))
     || (typeof value.id === 'number' && !Number.isFinite(value.id))
@@ -57,13 +64,31 @@ const decodeRequest = (id: string, value: Record<string, unknown>, groupId: stri
     || value.workspaceId !== groupId
     || typeof value.title !== 'string'
     || typeof value.cadence !== 'string'
-    || typeof value.total !== 'number'
-    || !Number.isFinite(value.total)
     || typeof value.due !== 'string'
-    || !Array.isArray(value.contributions)
+    || participantCount === 0
+    || participantCount > 30
   ) throw new Error(`بيانات طلب المساهمة ${id} غير صالحة.`)
 
-  const contributions = value.contributions
+  const participantNames = value.participantNames && typeof value.participantNames === 'object'
+    ? value.participantNames as Record<string, unknown>
+    : {}
+  const contributionStatuses = value.contributionStatuses && typeof value.contributionStatuses === 'object'
+    ? value.contributionStatuses as Record<string, unknown>
+    : {}
+  const contributions = participantUids
+    ? participantUids.map((uid) => {
+      if (typeof uid !== 'string' || typeof participantNames[uid] !== 'string') {
+        throw new Error(`بيانات عضو غير صالحة في طلب المساهمة ${id}.`)
+      }
+      return {
+        uid,
+        name: participantNames[uid],
+        status: contributionStatuses[uid] ?? 'unpaid',
+      }
+    })
+    : legacyContributions
+  if (!contributions) throw new Error(`بيانات طلب المساهمة ${id} غير صالحة.`)
+  const defaultShare = Math.floor((requestTotal / contributions.length) * 100) / 100
   const confirmationTimes = value.confirmationTimes && typeof value.confirmationTimes === 'object'
     ? value.confirmationTimes as Record<string, unknown>
     : {}
@@ -73,23 +98,31 @@ const decodeRequest = (id: string, value: Record<string, unknown>, groupId: stri
     ...(typeof value.createdBy === 'string' ? { createdBy: value.createdBy } : {}),
     title: value.title,
     cadence: value.cadence,
-    total: value.total,
+    total: requestTotal,
     due: value.due,
-    contributions: contributions.map((item): SyncedContribution => {
+    contributions: contributions.map((item, index): SyncedContribution => {
       if (!item || typeof item !== 'object') throw new Error(`عضو غير صالح في طلب المساهمة ${id}.`)
       const contribution = item as Record<string, unknown>
-      const status = contribution.status
+      const status = typeof contribution.uid === 'string'
+        ? contributionStatuses[contribution.uid] ?? contribution.status
+        : contribution.status
+      if ('amount' in contribution && (
+        typeof contribution.amount !== 'number' || !Number.isFinite(contribution.amount)
+      )) throw new Error(`بيانات مساهمة غير صالحة في طلب المساهمة ${id}.`)
+      const amount = typeof contribution.amount === 'number' && Number.isFinite(contribution.amount)
+        ? contribution.amount
+        : index === contributions.length - 1
+          ? Math.round((requestTotal - defaultShare * (contributions.length - 1)) * 100) / 100
+          : defaultShare
       if (
         typeof contribution.uid !== 'string'
         || typeof contribution.name !== 'string'
-        || typeof contribution.amount !== 'number'
-        || !Number.isFinite(contribution.amount)
         || !['unpaid', 'awaiting', 'paid', 'rejected'].includes(String(status))
       ) throw new Error(`بيانات مساهمة غير صالحة في طلب المساهمة ${id}.`)
       return {
         uid: contribution.uid,
         name: contribution.name,
-        amount: contribution.amount,
+        amount,
         status: status as SyncedPaymentStatus,
         confirmedAt: toMillis(confirmationTimes[contribution.uid]) ?? toMillis(contribution.confirmedAt),
       }
@@ -252,7 +285,17 @@ export async function createSyncedRequest(
     const ref = paymentRequestRef(groupId, request.id, firestore)
     const snapshot = await transaction.get(ref)
     if (snapshot.exists()) throw new Error('يوجد طلب مساهمة بهذا الرقم بالفعل.')
-    transaction.set(ref, request)
+    transaction.set(ref, {
+      id: request.id,
+      workspaceId: request.workspaceId,
+      createdBy: request.createdBy,
+      title: request.title,
+      cadence: request.cadence,
+      total: request.total,
+      due: request.due,
+      participantUids: request.contributions.map(({ uid }) => uid),
+      participantNames: Object.fromEntries(request.contributions.map(({ uid, name }) => [uid, name])),
+    })
   })
 }
 
@@ -299,18 +342,25 @@ export async function decideSyncedContribution(
     const contribution = request.contributions.find((item) => item.uid === memberUid)
     if (!contribution || !['unpaid', 'rejected'].includes(contribution.status) || !confirmationSnapshot.exists()) return null
 
-    const updatedContributions = request.contributions.map((item) => item.uid === memberUid
+    const updatedStatuses = Object.fromEntries(request.contributions.map((item) => [
+      item.uid,
+      item.uid === memberUid ? decision : item.status,
+    ]))
+    const updatedLegacyContributions = request.contributions.map((item) => item.uid === memberUid
       ? {
         ...item,
         status: decision,
         confirmedAt: decision === 'rejected' ? null : toMillis(confirmationSnapshot.data().confirmedAt),
       }
       : item)
+    const isLegacyRequest = Array.isArray(requestSnapshot.data().contributions)
     const shouldAddToBalance = decision === 'paid'
     const fundRef = balanceRef(groupId, firestore)
     const fundSnapshot = shouldAddToBalance ? await transaction.get(fundRef) : null
 
-    transaction.update(requestRef, { contributions: updatedContributions })
+    transaction.update(requestRef, isLegacyRequest
+      ? { contributions: updatedLegacyContributions }
+      : { contributionStatuses: updatedStatuses })
     transaction.delete(memberConfirmationRef)
     if (shouldAddToBalance) {
       const balance = fundSnapshot?.exists() ? fundSnapshot.data().balance : 0
@@ -337,6 +387,7 @@ export async function approveAllSyncedContributions(
     const requestSnapshot = await transaction.get(requestRef)
     if (!requestSnapshot.exists()) throw new Error('تعذر العثور على طلب المساهمة.')
     const request = decodeRequest(requestSnapshot.id, requestSnapshot.data(), groupId)
+    const isLegacyRequest = Array.isArray(requestSnapshot.data().contributions)
     const confirmationSnapshots = await Promise.all(confirmationsSnapshot.docs.map((confirmation) =>
       transaction.get(confirmation.ref)))
     const existingConfirmations = confirmationSnapshots.filter((confirmation) => confirmation.exists())
@@ -352,11 +403,18 @@ export async function approveAllSyncedContributions(
     const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
     if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد الصندوق غير صالح.')
 
-    transaction.update(requestRef, {
-      contributions: request.contributions.map((item) => confirmationTimes.has(item.uid)
-        ? { ...item, status: 'paid', confirmedAt: confirmationTimes.get(item.uid) ?? null }
-        : item),
-    })
+    transaction.update(requestRef, isLegacyRequest
+      ? {
+        contributions: request.contributions.map((item) => confirmationTimes.has(item.uid)
+          ? { ...item, status: 'paid', confirmedAt: confirmationTimes.get(item.uid) ?? null }
+          : item),
+      }
+      : {
+        contributionStatuses: Object.fromEntries(request.contributions.map((item) => [
+        item.uid,
+        confirmationTimes.has(item.uid) ? 'paid' : item.status,
+        ])),
+      })
     existingConfirmations.forEach((confirmation) => transaction.delete(confirmation.ref))
     transaction.set(fundRef, {
       groupId,

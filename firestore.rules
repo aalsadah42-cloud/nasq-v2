@@ -9,6 +9,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/groups/$(groupId)/members/$(uid);
     }
 
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/groups/$(groupId);
+    }
+
     function isMember(groupId) {
       return signedIn() && exists(memberPath(groupId, request.auth.uid));
     }
@@ -18,94 +22,51 @@ service cloud.firestore {
         && get(memberPath(groupId, request.auth.uid)).data.role in ['owner', 'admin'];
     }
 
-    function validContribution(groupId, contribution) {
-      return contribution is map
-        && contribution.keys().hasAll(['uid', 'name', 'amount', 'status'])
-        && contribution.keys().hasOnly(['uid', 'name', 'amount', 'status'])
-        && contribution.uid is string
-        && contribution.name is string
-        && contribution.name.size() > 0
-        && contribution.amount is number
-        && contribution.amount > 0
-        && contribution.status == 'unpaid'
-        && exists(memberPath(groupId, contribution.uid));
+    function validParticipants(groupId, participantUids, participantNames) {
+      let memberUids = get(groupPath(groupId)).data.memberUids;
+      return participantUids is list
+        && participantUids.size() > 0
+        && participantUids.size() <= 30
+        && participantUids.size() == memberUids.size()
+        && participantUids.hasAll(memberUids)
+        && memberUids.hasAll(participantUids)
+        && participantNames is map
+        && participantNames.keys().size() == participantUids.size()
+        && participantNames.keys().hasAll(participantUids);
     }
 
-    function validContributionAt(groupId, contributions, index) {
-      return contributions.size() <= index
-        || validContribution(groupId, contributions[index]);
+    function validMemberListAddition(groupId) {
+      let memberUid = request.resource.data.memberCountChangeUid;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'memberCountChangeUid'])
+        && resource.data.memberUids is list
+        && request.resource.data.memberUids is list
+        && memberUid is string
+        && memberUid == request.auth.uid
+        && request.resource.data.memberUids.size() == resource.data.memberUids.size() + 1
+        && request.resource.data.memberUids.size() <= 30
+        && request.resource.data.memberUids.hasAll(resource.data.memberUids)
+        && request.resource.data.memberUids.hasAll([memberUid])
+        && !resource.data.memberUids.hasAny([memberUid])
+        && !exists(memberPath(groupId, memberUid))
+        && existsAfter(memberPath(groupId, memberUid));
     }
 
-    function contributionAmountAt(contributions, index) {
-      return contributions.size() > index ? contributions[index].amount : 0;
-    }
-
-    function validContributions(groupId, contributions, total) {
-      let sum = contributionAmountAt(contributions, 0)
-        + contributionAmountAt(contributions, 1)
-        + contributionAmountAt(contributions, 2)
-        + contributionAmountAt(contributions, 3)
-        + contributionAmountAt(contributions, 4)
-        + contributionAmountAt(contributions, 5)
-        + contributionAmountAt(contributions, 6)
-        + contributionAmountAt(contributions, 7)
-        + contributionAmountAt(contributions, 8)
-        + contributionAmountAt(contributions, 9)
-        + contributionAmountAt(contributions, 10)
-        + contributionAmountAt(contributions, 11)
-        + contributionAmountAt(contributions, 12)
-        + contributionAmountAt(contributions, 13)
-        + contributionAmountAt(contributions, 14)
-        + contributionAmountAt(contributions, 15)
-        + contributionAmountAt(contributions, 16)
-        + contributionAmountAt(contributions, 17)
-        + contributionAmountAt(contributions, 18)
-        + contributionAmountAt(contributions, 19)
-        + contributionAmountAt(contributions, 20)
-        + contributionAmountAt(contributions, 21)
-        + contributionAmountAt(contributions, 22)
-        + contributionAmountAt(contributions, 23)
-        + contributionAmountAt(contributions, 24)
-        + contributionAmountAt(contributions, 25)
-        + contributionAmountAt(contributions, 26)
-        + contributionAmountAt(contributions, 27)
-        + contributionAmountAt(contributions, 28)
-        + contributionAmountAt(contributions, 29);
-      return contributions is list
-        && contributions.size() > 0
-        && contributions.size() <= 30
-        && validContributionAt(groupId, contributions, 0)
-        && validContributionAt(groupId, contributions, 1)
-        && validContributionAt(groupId, contributions, 2)
-        && validContributionAt(groupId, contributions, 3)
-        && validContributionAt(groupId, contributions, 4)
-        && validContributionAt(groupId, contributions, 5)
-        && validContributionAt(groupId, contributions, 6)
-        && validContributionAt(groupId, contributions, 7)
-        && validContributionAt(groupId, contributions, 8)
-        && validContributionAt(groupId, contributions, 9)
-        && validContributionAt(groupId, contributions, 10)
-        && validContributionAt(groupId, contributions, 11)
-        && validContributionAt(groupId, contributions, 12)
-        && validContributionAt(groupId, contributions, 13)
-        && validContributionAt(groupId, contributions, 14)
-        && validContributionAt(groupId, contributions, 15)
-        && validContributionAt(groupId, contributions, 16)
-        && validContributionAt(groupId, contributions, 17)
-        && validContributionAt(groupId, contributions, 18)
-        && validContributionAt(groupId, contributions, 19)
-        && validContributionAt(groupId, contributions, 20)
-        && validContributionAt(groupId, contributions, 21)
-        && validContributionAt(groupId, contributions, 22)
-        && validContributionAt(groupId, contributions, 23)
-        && validContributionAt(groupId, contributions, 24)
-        && validContributionAt(groupId, contributions, 25)
-        && validContributionAt(groupId, contributions, 26)
-        && validContributionAt(groupId, contributions, 27)
-        && validContributionAt(groupId, contributions, 28)
-        && validContributionAt(groupId, contributions, 29)
-        && sum >= total - 0.001
-        && sum <= total + 0.001;
+    function validMemberListRemoval(groupId) {
+      let memberUid = request.resource.data.memberCountChangeUid;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'memberCountChangeUid'])
+        && resource.data.memberUids is list
+        && request.resource.data.memberUids is list
+        && memberUid is string
+        && (
+          isManager(groupId)
+          || memberUid == request.auth.uid
+        )
+        && request.resource.data.memberUids.size() == resource.data.memberUids.size() - 1
+        && resource.data.memberUids.hasAll(request.resource.data.memberUids)
+        && resource.data.memberUids.hasAll([memberUid])
+        && !request.resource.data.memberUids.hasAny([memberUid])
+        && get(memberPath(groupId, memberUid)).data.role != 'owner'
+        && !existsAfter(memberPath(groupId, memberUid));
     }
 
     match /users/{uid} {
@@ -117,8 +78,37 @@ service cloud.firestore {
       allow list: if signedIn() && isMember(resource.data.groupId);
       allow create: if signedIn()
         && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.memberCount == 1
+        && !exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId))
         && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.createdBy == request.auth.uid;
-      allow update, delete: if signedIn() && isManager(resource.data.groupId);
+      allow update: if signedIn() && (
+        (
+          isManager(resource.data.groupId)
+          && request.resource.data.groupId == resource.data.groupId
+          && request.resource.data.memberCount == resource.data.memberCount
+        )
+        || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'memberCountChangeUid'])
+          && request.resource.data.memberCount is int
+          && resource.data.memberCount is int
+          && request.resource.data.memberCountChangeUid is string
+          && (
+            (
+              request.resource.data.memberCount == resource.data.memberCount + 1
+              && request.resource.data.memberCount <= 30
+              && !exists(memberPath(resource.data.groupId, request.resource.data.memberCountChangeUid))
+              && existsAfter(memberPath(resource.data.groupId, request.resource.data.memberCountChangeUid))
+            )
+            || (
+              request.resource.data.memberCount == resource.data.memberCount - 1
+              && request.resource.data.memberCount >= 1
+              && exists(memberPath(resource.data.groupId, request.resource.data.memberCountChangeUid))
+              && !existsAfter(memberPath(resource.data.groupId, request.resource.data.memberCountChangeUid))
+            )
+          )
+        )
+      );
+      allow delete: if signedIn() && isManager(resource.data.groupId);
     }
 
     match /groups/{groupId} {
@@ -128,8 +118,12 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 80;
-      allow update: if isManager(groupId)
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.memberUids is list
+        && request.resource.data.memberUids.size() == 1
+        && request.resource.data.memberUids.hasAll([request.auth.uid]);
+      allow update: if (
+        isManager(groupId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'createdBy'])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -142,7 +136,14 @@ service cloud.firestore {
             && getAfter(memberPath(groupId, request.resource.data.createdBy)).data.role == 'owner'
             && getAfter(memberPath(groupId, request.auth.uid)).data.role == 'admin'
           )
-        );
+        )
+      ) || (
+        signedIn()
+        && validMemberListAddition(groupId)
+      ) || (
+        signedIn()
+        && validMemberListRemoval(groupId)
+      );
       allow delete: if isManager(groupId)
         && get(memberPath(groupId, request.auth.uid)).data.role == 'owner';
 
@@ -153,10 +154,19 @@ service cloud.firestore {
           && memberUid == request.auth.uid
           && (
             (request.resource.data.role == 'owner'
-              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid)
+              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid
+              && getAfter(groupPath(groupId)).data.memberUids.hasAll([memberUid])
+              && getAfter(groupPath(groupId)).data.memberUids.size() == 1
+            )
             || (request.resource.data.role == 'member'
               && request.resource.data.joinedViaInviteCode is string
-              && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.groupId == groupId)
+              && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.groupId == groupId
+              && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.memberCount < 30
+              && getAfter(groupPath(groupId)).data.memberUids.size() <= 30
+              && getAfter(groupPath(groupId)).data.memberUids.hasAll([memberUid])
+              && getAfter(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.memberCount
+                == get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.memberCount + 1
+              && getAfter(/databases/$(database)/documents/inviteCodes/$(request.resource.data.joinedViaInviteCode)).data.memberCountChangeUid == memberUid)
           );
         allow update: if (
           isManager(groupId)
@@ -198,7 +208,14 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
         );
         allow delete: if (
-          isManager(groupId) && resource.data.role != 'owner'
+          (isManager(groupId) || (signedIn() && memberUid == request.auth.uid))
+          && resource.data.role != 'owner'
+          && resource.data.joinedViaInviteCode is string
+          && get(groupPath(groupId)).data.memberUids.hasAll([memberUid])
+          && !getAfter(groupPath(groupId)).data.memberUids.hasAny([memberUid])
+          && get(/databases/$(database)/documents/inviteCodes/$(resource.data.joinedViaInviteCode)).data.memberCount
+            == getAfter(/databases/$(database)/documents/inviteCodes/$(resource.data.joinedViaInviteCode)).data.memberCount + 1
+          && getAfter(/databases/$(database)/documents/inviteCodes/$(resource.data.joinedViaInviteCode)).data.memberCountChangeUid == memberUid
         ) || (
           signedIn() && memberUid == request.auth.uid && resource.data.role != 'owner'
         ) || (
@@ -214,10 +231,10 @@ service cloud.firestore {
         allow read: if isMember(groupId);
         allow create: if isMember(groupId)
           && request.resource.data.keys().hasAll([
-            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'contributions', 'createdBy'
+            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'participantUids', 'participantNames', 'createdBy'
           ])
           && request.resource.data.keys().hasOnly([
-            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'contributions', 'createdBy'
+            'id', 'workspaceId', 'title', 'cadence', 'total', 'due', 'participantUids', 'participantNames', 'createdBy'
           ])
           && request.resource.data.id is number
           && request.resource.data.workspaceId == groupId
@@ -228,7 +245,7 @@ service cloud.firestore {
           && request.resource.data.due is string
           && request.resource.data.total is number
           && request.resource.data.total > 0
-          && validContributions(groupId, request.resource.data.contributions, request.resource.data.total);
+          && validParticipants(groupId, request.resource.data.participantUids, request.resource.data.participantNames);
         allow update, delete: if isManager(groupId);
 
         match /confirmations/{memberUid} {

@@ -25,6 +25,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "autoprefixer": "^10.6.1",
+    "firebase-admin": "^14.5.0",
     "firebase-tools": "^15.34.2",
     "oxlint": "^1.88.0",
     "postcss": "^8.5.31",
