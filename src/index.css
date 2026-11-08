@@ -11,6 +11,30 @@
   font-weight: 400;
 }
 
+:root,
+body,
+input,
+button,
+textarea {
+  font-variant-numeric: lining-nums tabular-nums !important;
+  font-feature-settings: "lnum" 1, "tnum" 1 !important;
+}
+
+input[type="number"] {
+  direction: ltr;
+  font-family: Arial, sans-serif !important;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 * {
   box-sizing: border-box;
 }

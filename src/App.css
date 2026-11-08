@@ -231,6 +231,8 @@
   background: #fff2df;
   border-radius: 6px;
   font-size: 10px;
+  font-variant-numeric: lining-nums tabular-nums;
+  font-feature-settings: "lnum" 1, "tnum" 1;
 }
 
 .sidebar-divider {
@@ -2939,6 +2941,8 @@ td:first-child small {
   border-radius: 8px;
   font-size: 11px;
   font-weight: 700;
+  font-variant-numeric: lining-nums tabular-nums;
+  font-feature-settings: "lnum" 1, "tnum" 1;
 }
 
 .split-step-heading h2 {

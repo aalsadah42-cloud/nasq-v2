@@ -305,8 +305,11 @@ const useNavigationStore = create<NavigationState>((set) => ({
   setRoute: (route) => set(route),
 }))
 
-const formatNumber = (value: number, locale = 'ar-SA') =>
-  new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value)
+const formatNumber = (value: number | string) => {
+  const number = typeof value === 'string' ? Number.parseFloat(value) : value
+  if (Number.isNaN(number)) return '0'
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(number)
+}
 
 const money = (value: number) => formatNumber(value)
 
@@ -325,7 +328,7 @@ const deadlineOptionsFor = (dayOffset: number, eventAt: number): DeadlineOption[
   const now = Date.now()
   const options: DeadlineOption[] = dayOffset === 0
     ? [
-      { id: '30m', labelAr: 'بعد ٣٠ دقيقة', labelEn: 'In 30 minutes', at: now + 30 * 60 * 1000 },
+      { id: '30m', labelAr: 'بعد 30 دقيقة', labelEn: 'In 30 minutes', at: now + 30 * 60 * 1000 },
       { id: '1h', labelAr: 'بعد ساعة', labelEn: 'In 1 hour', at: now + 60 * 60 * 1000 },
       { id: '2h', labelAr: 'بعد ساعتين', labelEn: 'In 2 hours', at: now + 2 * 60 * 60 * 1000 },
       { id: 'before1h', labelAr: 'قبل الموعد بساعة', labelEn: '1 hour before', at: eventAt - 60 * 60 * 1000 },
@@ -337,8 +340,8 @@ const deadlineOptionsFor = (dayOffset: number, eventAt: number): DeadlineOption[
         evening.setHours(20, 0, 0, 0)
         return evening.getTime()
       })() },
-      { id: 'before24h', labelAr: 'قبل الموعد بـ ٢٤ ساعة', labelEn: '24 hours before', at: eventAt - 24 * 60 * 60 * 1000 },
-      { id: 'before6h', labelAr: 'قبل الموعد بـ ٦ ساعات', labelEn: '6 hours before', at: eventAt - 6 * 60 * 60 * 1000 },
+      { id: 'before24h', labelAr: 'قبل الموعد بـ 24 ساعة', labelEn: '24 hours before', at: eventAt - 24 * 60 * 60 * 1000 },
+      { id: 'before6h', labelAr: 'قبل الموعد بـ 6 ساعات', labelEn: '6 hours before', at: eventAt - 6 * 60 * 60 * 1000 },
       { id: 'before1h', labelAr: 'قبل الموعد بساعة', labelEn: '1 hour before', at: eventAt - 60 * 60 * 1000 },
     ]
   return options.filter((option) => option.at > now && option.at < eventAt)
@@ -783,7 +786,7 @@ function App() {
           createdById: currentUser.uid,
           createdByName: currentUserName,
           title: name,
-          date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long' }).format(eventAt),
+          date: new Intl.DateTimeFormat('ar-SA', { weekday: 'long', day: 'numeric', month: 'long', numberingSystem: 'latn' }).format(eventAt),
           eventAt,
           deadlineAt: selectedDeadline.at,
           location: gatheringLocation.trim() || 'لم يُحدّد الموقع بعد',
@@ -1415,7 +1418,7 @@ function App() {
                       const date = new Date(eventTimeFor(dayOffset, '12:00'))
                       const selected = gatheringDayOffset === dayOffset
                       const isToday = dayOffset === 0
-                      const dateLabel = new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'long', day: 'numeric', month: 'long' }).format(date)
+                      const dateLabel = new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'long', day: 'numeric', month: 'long', numberingSystem: 'latn' }).format(date)
                       return (
                         <button
                           key={dayOffset}
@@ -1428,8 +1431,8 @@ function App() {
                             setGatheringDeadline(deadlineOptionsFor(dayOffset, eventTimeFor(dayOffset, gatheringTime))[0]?.id ?? (dayOffset === 0 ? '2h' : 'before24h'))
                           }}
                         >
-                          <span>{isToday ? (gatheringsLanguage === 'ar' ? 'اليوم' : 'Today') : new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'short' }).format(date)}</span>
-                          <strong>{new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { day: 'numeric' }).format(date)}</strong>
+                          <span>{isToday ? (gatheringsLanguage === 'ar' ? 'اليوم' : 'Today') : new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { weekday: 'short', numberingSystem: 'latn' }).format(date)}</span>
+                          <strong>{new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { day: 'numeric', numberingSystem: 'latn' }).format(date)}</strong>
                           <small>{new Intl.DateTimeFormat(gatheringsLanguage === 'ar' ? 'ar-SA' : 'en-US', { month: 'short' }).format(date)}</small>
                         </button>
                       )
@@ -1790,7 +1793,7 @@ function FundsView({
             <label><span>{formKind === 'kattah' ? 'عنوان القطية' : formKind === 'obligation' ? 'اسم الالتزام' : 'سبب المصروف'}</span><input required value={formTitle} onChange={(event) => setFormTitle(event.target.value)} placeholder={formKind === 'kattah' ? 'مثال: قطية شهر نوفمبر' : formKind === 'obligation' ? 'مثال: فاتورة المياه' : 'مثال: مستلزمات طارئة للاستراحة'} /></label>
             <label><span>المبلغ الإجمالي (ر.س)</span><input required type="number" min="0.01" step="0.01" value={formAmount} onChange={(event) => setFormAmount(event.target.value)} placeholder="0.00" /></label>
             {formKind !== 'reimbursement' && <label><span>نوع الاستحقاق</span><select value={formCadence} onChange={(event) => setFormCadence(event.target.value)}><option>فوري</option><option>شهري</option><option>سنوي</option></select></label>}
-            {formKind !== 'reimbursement' && <label><span>تاريخ الاستحقاق</span><input value={formDue} onChange={(event) => setFormDue(event.target.value)} placeholder="مثال: ١ نوفمبر ٢٠٢٦" /></label>}
+            {formKind !== 'reimbursement' && <label><span>تاريخ الاستحقاق</span><input value={formDue} onChange={(event) => setFormDue(event.target.value)} placeholder="مثال: 1 نوفمبر 2026" /></label>}
             {formKind === 'reimbursement' && <label className="receipt-upload"><span>إيصال الشراء</span><span className="receipt-picker"><ReceiptText size={14} />{receiptName || 'اختر صورة أو ملف PDF لإرفاقه'}<input type="file" accept="image/*,.pdf" onChange={(event) => setReceiptName(event.target.files?.[0]?.name ?? '')} /></span></label>}
           </div>
           {formKind === 'reimbursement' && <p className="fund-form-note"><ShieldCheck size={14} /> الإيصال يبقى ضمن هذا النموذج التجريبي ولا يُرفع إلى خادم.</p>}
@@ -1924,7 +1927,7 @@ function GatheringsView({
   const [taskTitle, setTaskTitle] = useState('')
   const notifiedDeadlines = useRef(new Set<string>())
   const isEnglish = language === 'en'
-  const formatMoney = (value: number) => formatNumber(value, isEnglish ? 'en-SA' : 'ar-SA')
+  const formatMoney = (value: number) => formatNumber(value)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -2002,10 +2005,10 @@ function GatheringsView({
           const currentDecision = gathering.participants.find((person) => person.uid === currentUserId)?.decision
           const isOrganizer = gathering.createdById === currentUserId
           const displayDate = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
-            weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
+            weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit', numberingSystem: 'latn',
           }).format(gathering.eventAt)
           const deadlineLabel = new Intl.DateTimeFormat(isEnglish ? 'en-US' : 'ar-SA', {
-            day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+            day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', numberingSystem: 'latn',
           }).format(gathering.deadlineAt)
 
           return (
@@ -2026,9 +2029,9 @@ function GatheringsView({
                 <strong>{countdown}</strong>
                 {!closed && <small>{isEnglish ? `Deadline ${deadlineLabel}` : `الإغلاق ${deadlineLabel}`}</small>}
               </div>
-              {closed && <div className="organizer-notice"><Bell size={14} /> {isEnglish ? `${formatNumber(joined.length, 'en-SA')} confirmed attendee${joined.length === 1 ? '' : 's'} — notify the organizer` : `تأكيد العدد النهائي: ${formatNumber(joined.length)} مشارك · أبلغ المنشئ`}</div>}
+              {closed && <div className="organizer-notice"><Bell size={14} /> {isEnglish ? `${formatNumber(joined.length)} confirmed attendee${joined.length === 1 ? '' : 's'} — notify the organizer` : `تأكيد العدد النهائي: ${formatNumber(joined.length)} مشارك · أبلغ المنشئ`}</div>}
               <div className="attendee-block">
-                <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{formatNumber(joined.length, isEnglish ? 'en-SA' : 'ar-SA')} <small>/ {formatNumber(gathering.participants.length, isEnglish ? 'en-SA' : 'ar-SA')}</small></strong></div>
+                <div className="attendee-label"><span><UsersRound size={15} /> {isEnglish ? 'Confirmed' : 'تأكيدات الحضور'}</span><strong>{formatNumber(joined.length)} <small>/ {formatNumber(gathering.participants.length)}</small></strong></div>
                 <div className="progress-track"><span style={{ width: `${gathering.participants.length ? (joined.length / gathering.participants.length) * 100 : 0}%` }} /></div>
                 <div className="participant-chips">{gathering.participants.filter((person) => person.decision === 'joined' || person.name === gathering.createdByName).map((person) => <span className={person.name === gathering.createdByName ? 'creator-chip' : ''} key={person.name} title={person.name === gathering.createdByName ? `${isEnglish ? 'Organizer' : 'المنشئ'}: ${person.name}` : person.late ? (isEnglish ? 'Added after RSVP closed' : 'أُضيف بعد إغلاق التصويت') : person.name}>{person.name.slice(0, 1)}<small>{person.name}</small>{person.name === gathering.createdByName && <i aria-hidden="true">👑</i>}{person.late && <i>+</i>}</span>)}</div>
               </div>
@@ -2086,7 +2089,7 @@ function GatheringsView({
             </div>
           </div>
           <section className="gathering-tasks" aria-labelledby="gathering-tasks-heading">
-            <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{formatNumber(selectedGathering.tasks.length, isEnglish ? 'en-SA' : 'ar-SA')}</span></div>
+            <div className="gathering-tasks-heading"><div><h3 id="gathering-tasks-heading">{isEnglish ? 'Tasks to organize' : 'مهام تحتاج تنظيم'}</h3><p>{isEnglish ? 'Claim a task to coordinate with the group.' : 'اختر مهمة لتسجيلها باسمك ومنع تكرار التكليف.'}</p></div><span>{formatNumber(selectedGathering.tasks.length)}</span></div>
             {selectedGathering.createdById === currentUserId && <form className="task-entry-form" onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; onAddTask(selectedGathering.id, taskTitle); setTaskTitle('') }}><label className="modal-field"><span>{isEnglish ? 'New task' : 'مهمة جديدة'}</span><input required value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={isEnglish ? 'e.g. Bring drinks' : 'مثال: شراء المشروبات'} /></label><button className="button-outline" type="submit"><Plus size={15} /> {isEnglish ? 'Add task' : 'إضافة مهمة'}</button></form>}
             <div className="gathering-task-list">{selectedGathering.tasks.map((task) => {
               const currentMemberJoined = selectedGathering.participants.some((person) => person.uid === currentUserId && person.decision === 'joined')
@@ -2192,10 +2195,10 @@ function SplitView({ amount, people, shares, customShares, splitMatches, splitTo
       <PageIntro eyebrow="قسمة عادلة، في ثوانٍ" title="القسمة السريعة" description="أدخل المبلغ واختر المشاركين، ونسق يحسب حصة كل شخص." action="رجوع للرئيسية" onAction={() => onNavigate('overview')} />
       <div className="split-layout">
         <section className="panel split-form">
-          <div className="split-step-heading"><span className="step-number">١</span><div><h2>كم إجمالي المبلغ؟</h2><p>المبلغ اللي اندفع أو ودّكم تقسّمونه</p></div></div>
+          <div className="split-step-heading"><span className="step-number">1</span><div><h2>كم إجمالي المبلغ؟</h2><p>المبلغ اللي اندفع أو ودّكم تقسّمونه</p></div></div>
           <label className="amount-input-wrap"><input inputMode="decimal" type="number" min="0" step="0.01" value={amount} onChange={(event) => onAmountChange(event.target.value)} aria-label="إجمالي المبلغ" /><span>ر.س</span></label>
           <div className="split-divider" />
-          <div className="split-step-heading"><span className="step-number">٢</span><div><h2>مين يشارك بالقسمة؟</h2><p>{formatNumber(people.length)} أشخاص · اضغط على الاسم لتعديله</p></div></div>
+          <div className="split-step-heading"><span className="step-number">2</span><div><h2>مين يشارك بالقسمة؟</h2><p>{formatNumber(people.length)} أشخاص · اضغط على الاسم لتعديله</p></div></div>
           <div className="people-list">
             {people.map((person, index) => (
               <div className="person-row" key={`${index}-${person}`}>
