@@ -83,6 +83,9 @@ type Gathering = {
   participants: GatheringParticipant[]
   expenses: GatheringExpense[]
   tasks: GatheringTask[]
+  participantDecisionsByUid?: Record<string, Exclude<GatheringDecision, 'pending'>>
+  expensesByUid?: Record<string, GatheringExpense[]>
+  taskClaimsByUid?: Record<string, number[]>
   estimatedCost?: number
 }
 type GatheringLanguage = 'ar' | 'en'
@@ -231,6 +234,9 @@ const isGatheringTask = (value: unknown): value is GatheringTask =>
   && (value.assignedTo === undefined || typeof value.assignedTo === 'string')
 
 const decodeGathering = (id: string, value: DocumentData): Gathering => {
+  const participantDecisionsByUid = value.participantDecisionsByUid ?? {}
+  const expensesByUid = value.expensesByUid ?? {}
+  const taskClaimsByUid = value.taskClaimsByUid ?? {}
   if (
     typeof value.createdById !== 'string'
     || typeof value.createdByName !== 'string'
@@ -250,8 +256,34 @@ const decodeGathering = (id: string, value: DocumentData): Gathering => {
     || !value.expenses.every(isGatheringExpense)
     || !Array.isArray(value.tasks)
     || !value.tasks.every(isGatheringTask)
+    || !isRecord(participantDecisionsByUid)
+    || !Object.values(participantDecisionsByUid).every((decision) => decision === 'joined' || decision === 'declined')
+    || !isRecord(expensesByUid)
+    || !Object.values(expensesByUid).every((expenses) => Array.isArray(expenses) && expenses.every(isGatheringExpense))
+    || !isRecord(taskClaimsByUid)
+    || !Object.values(taskClaimsByUid).every((taskIds) => Array.isArray(taskIds) && taskIds.every((taskId) => typeof taskId === 'number'))
     || (value.estimatedCost !== undefined && typeof value.estimatedCost !== 'number')
   ) throw new Error(`بيانات الجمعة ${id} غير صالحة.`)
+
+  const participants = (value.participants as GatheringParticipant[]).map((participant) => ({
+    ...participant,
+    ...(participant.uid && participantDecisionsByUid[participant.uid]
+      ? { decision: participantDecisionsByUid[participant.uid] as Exclude<GatheringDecision, 'pending'> }
+      : {}),
+  }))
+  const expenses = [
+    ...(value.expenses as GatheringExpense[]),
+    ...Object.values(expensesByUid as Record<string, GatheringExpense[]>).flat(),
+  ]
+  const participantNamesByUid = new Map(participants.flatMap((participant) =>
+    participant.uid ? [[participant.uid, participant.name] as const] : []))
+  const tasks = (value.tasks as GatheringTask[]).map((task) => {
+    const claimantUid = Object.entries(taskClaimsByUid as Record<string, number[]>)
+      .find(([, taskIds]) => taskIds.includes(task.id))?.[0]
+    return claimantUid
+      ? { ...task, assignedTo: participantNamesByUid.get(claimantUid) ?? 'عضو' }
+      : task
+  })
 
   return {
     id,
@@ -262,14 +294,17 @@ const decodeGathering = (id: string, value: DocumentData): Gathering => {
     eventAt: value.eventAt,
     deadlineAt: value.deadlineAt,
     location: value.location,
-    attendees: value.attendees,
+    attendees: participants.filter((participant) => participant.decision === 'joined').length,
     total: value.total,
     badge: value.badge,
     badgeColor: value.badgeColor,
     icon: value.icon,
-    participants: value.participants,
-    expenses: value.expenses,
-    tasks: value.tasks,
+    participants,
+    expenses,
+    tasks,
+    participantDecisionsByUid: participantDecisionsByUid as Record<string, Exclude<GatheringDecision, 'pending'>>,
+    expensesByUid: expensesByUid as Record<string, GatheringExpense[]>,
+    taskClaimsByUid: taskClaimsByUid as Record<string, number[]>,
     ...(typeof value.estimatedCost === 'number' ? { estimatedCost: value.estimatedCost } : {}),
   }
 }
@@ -717,7 +752,7 @@ function App() {
       setGatheringItems(groupId, (current) => current.flatMap((gathering) => {
         if (gathering.id !== gatheringId) return [gathering]
         const next = update(gathering)
-        return next ? [next] : []
+        return next ? [decodeGathering(next.id, { ...next })] : []
       }))
       return
     }
@@ -798,6 +833,9 @@ function App() {
           participants,
           expenses: [],
           tasks: [],
+          participantDecisionsByUid: {},
+          expensesByUid: {},
+          taskClaimsByUid: {},
           estimatedCost: Number(gatheringEstimate) || undefined,
         })
       } catch (error) {
@@ -821,15 +859,12 @@ function App() {
     if (!currentUser || !gathering || gathering.createdById === currentUserId || gathering.deadlineAt <= Date.now()) return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
       if (item.createdById === currentUserId || item.deadlineAt <= Date.now()) return item
-      const participants = item.participants.map((person) => ({
-        ...person,
-        ...(person.uid === currentUserId ? { decision } : {}),
-        settlementStatus: undefined,
-      }))
       return {
         ...item,
-        participants,
-        attendees: participants.filter((person) => person.decision === 'joined').length,
+        participantDecisionsByUid: {
+          ...item.participantDecisionsByUid,
+          [currentUserId]: decision,
+        },
       }
     })
   }
@@ -851,17 +886,22 @@ function App() {
   }
 
   const addGatheringExpense = (gatheringId: string, description: string, payer: string, amount: number) => {
-    if (!description.trim() || !payer || !Number.isFinite(amount) || amount <= 0) return
+    if (!currentUser || !description.trim() || !payer || !Number.isFinite(amount) || amount <= 0) return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => ({
-        ...item,
-        expenses: [...item.expenses, {
-          id: Math.max(Date.now(), ...item.expenses.map((expense) => expense.id + 1)),
-          description: description.trim(),
-          payer,
-          amount,
-        }],
-        participants: item.participants.map((person) => ({ ...person, settlementStatus: undefined })),
-      }))
+      ...item,
+      expensesByUid: {
+        ...item.expensesByUid,
+        [currentUser.uid]: [
+          ...(item.expensesByUid?.[currentUser.uid] ?? []),
+          {
+            id: Math.max(Date.now(), ...(item.expensesByUid?.[currentUser.uid] ?? []).map((expense) => expense.id + 1)),
+            description: description.trim(),
+            payer,
+            amount,
+          },
+        ],
+      },
+    }))
   }
 
   const addGatheringTask = (gatheringId: string, title: string) => {
@@ -880,7 +920,14 @@ function App() {
     if (!gathering || currentParticipant?.decision !== 'joined') return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
       if (item.participants.find((person) => person.uid === currentUserId)?.decision !== 'joined') return item
-      return { ...item, tasks: item.tasks.map((task) => task.id === taskId && !task.assignedTo ? { ...task, assignedTo: currentUserName } : task) }
+      if (item.tasks.find((task) => task.id === taskId)?.assignedTo) return item
+      return {
+        ...item,
+        taskClaimsByUid: {
+          ...item.taskClaimsByUid,
+          [currentUserId]: [...(item.taskClaimsByUid?.[currentUserId] ?? []), taskId],
+        },
+      }
     })
   }
 

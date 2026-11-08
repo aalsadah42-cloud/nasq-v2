@@ -13,6 +13,7 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  type Firestore,
 } from 'firebase/firestore'
 import {
   approveAllSyncedContributions,
@@ -367,35 +368,86 @@ test('a different group member cannot approve or read another group reimbursemen
   await assertFails(decideSyncedReimbursement('group-a', 30, 'awaiting-receipt', memberDb))
 })
 
-test('concurrent gathering expenses preserve both updates instead of overwriting stale state', async () => {
+test('concurrent per-member gathering expenses preserve both updates', async () => {
   const memberDb = environment.authenticatedContext('member-a').firestore()
   const adminDb = environment.authenticatedContext('admin-a').firestore()
-  type TestGathering = { id: string; expenses: Array<{ id: number; description: string }> }
+  type TestGathering = {
+    id: string
+    expenses: Array<{ id: number; description: string }>
+    expensesByUid?: Record<string, Array<{ id: number; description: string; payer: string; amount: number }>>
+  }
   const decode = (id: string, value: Record<string, unknown>) => ({ ...value, id }) as TestGathering
-  const addExpense = (description: string) => mutateSyncedGathering(
+  const addExpense = (uid: string, description: string, firestore: Firestore) => mutateSyncedGathering(
     'group-a',
     'gathering-1',
     decode,
     (gathering) => ({
       ...gathering,
-      expenses: [...gathering.expenses, { id: gathering.expenses.length + 1, description }],
+      expensesByUid: {
+        ...gathering.expensesByUid,
+        [uid]: [
+          ...(gathering.expensesByUid?.[uid] ?? []),
+          { id: (gathering.expensesByUid?.[uid] ?? []).length + 1, description, payer: uid, amount: 10 },
+        ],
+      },
     }),
-    memberDb,
+    firestore,
   )
 
   await Promise.all([
-    addExpense('Meal'),
-    mutateSyncedGathering('group-a', 'gathering-1', decode, (gathering) => ({
-      ...gathering,
-      expenses: [...gathering.expenses, { id: gathering.expenses.length + 1, description: 'Drinks' }],
-    }), adminDb),
+    addExpense('member-a', 'Meal', memberDb),
+    addExpense('admin-a', 'Drinks', adminDb),
   ])
 
   const gathering = await getDoc(doc(adminDb, 'groups/group-a/gatherings/gathering-1'))
   const gatheringData = gathering.data()
   assert.ok(gatheringData)
-  assert.ok(Array.isArray(gatheringData.expenses))
-  assert.deepEqual(gatheringData.expenses.map((item: { description: string }) => item.description).sort(), ['Drinks', 'Meal'])
+  assert.deepEqual(
+    Object.values(gatheringData.expensesByUid as Record<string, Array<{ description: string }>>)
+      .flat()
+      .map((item) => item.description)
+      .sort(),
+    ['Drinks', 'Meal'],
+  )
+})
+
+test('gathering members can update only their own RSVP, expense additions, and task claims', async () => {
+  const memberDb = environment.authenticatedContext('member-a').firestore()
+  const gatheringRef = doc(memberDb, 'groups/group-a/gatherings/gathering-1')
+
+  await assertSucceeds(updateDoc(gatheringRef, {
+    participantDecisionsByUid: { 'member-a': 'joined' },
+  }))
+  await assertFails(updateDoc(gatheringRef, {
+    participantDecisionsByUid: { 'member-a': 'declined', 'member-c': 'joined' },
+  }))
+  await assertSucceeds(updateDoc(gatheringRef, {
+    expensesByUid: {
+      'member-a': [{ id: 1, description: 'Meal', payer: 'Member A', amount: 10 }],
+    },
+  }))
+  await assertFails(updateDoc(gatheringRef, {
+    expensesByUid: {
+      'member-a': [{ id: 1, description: 'Changed meal', payer: 'Member A', amount: 1000 }],
+    },
+  }))
+  await assertFails(updateDoc(gatheringRef, {
+    expensesByUid: {
+      'member-a': [{ id: 1, description: 'Meal', payer: 'Member A', amount: 10 }],
+      'member-c': [{ id: 2, description: 'Other member expense', payer: 'Member C', amount: 10 }],
+    },
+  }))
+  await assertSucceeds(updateDoc(gatheringRef, {
+    taskClaimsByUid: { 'member-a': [1] },
+  }))
+  await assertFails(updateDoc(gatheringRef, {
+    taskClaimsByUid: { 'member-a': [1], 'member-c': [2] },
+  }))
+  await assertFails(updateDoc(gatheringRef, { attendees: 99 }))
+  await assertFails(updateDoc(gatheringRef, { total: 9999 }))
+  await assertFails(updateDoc(gatheringRef, {
+    participants: [{ uid: 'member-c', name: 'Member C', decision: 'joined' }],
+  }))
 })
 
 test('gathering creators control metadata and deletion while members can create only for themselves', async () => {

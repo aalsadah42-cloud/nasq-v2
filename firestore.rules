@@ -69,6 +69,84 @@ service cloud.firestore {
         && !existsAfter(memberPath(groupId, memberUid));
     }
 
+    function validSelfGatheringDecision(groupId) {
+      let before = resource.data.get('participantDecisionsByUid', {});
+      let after = request.resource.data.get('participantDecisionsByUid', {});
+      let changed = after.diff(before).affectedKeys();
+      return isMember(groupId)
+        && before is map
+        && after is map
+        && changed.hasOnly([request.auth.uid])
+        && changed.hasAny([request.auth.uid])
+        && after.get(request.auth.uid, null) in ['joined', 'declined'];
+    }
+
+    function validSelfGatheringExpense(groupId) {
+      let before = resource.data.get('expensesByUid', {});
+      let after = request.resource.data.get('expensesByUid', {});
+      let changed = after.diff(before).affectedKeys();
+      let oldExpenses = before.get(request.auth.uid, []);
+      let newExpenses = after.get(request.auth.uid, []);
+      let expense = newExpenses[newExpenses.size() - 1];
+      return isMember(groupId)
+        && before is map
+        && after is map
+        && changed.hasOnly([request.auth.uid])
+        && changed.hasAny([request.auth.uid])
+        && oldExpenses is list
+        && newExpenses is list
+        && newExpenses.size() == oldExpenses.size() + 1
+        && newExpenses.hasAll(oldExpenses)
+        && expense is map
+        && expense.keys().hasOnly(['id', 'description', 'payer', 'amount'])
+        && expense.id is number
+        && expense.description is string
+        && expense.description.size() > 0
+        && expense.payer is string
+        && expense.payer.size() > 0
+        && expense.amount is number
+        && expense.amount > 0;
+    }
+
+    function validSelfGatheringTaskClaim(groupId) {
+      let before = resource.data.get('taskClaimsByUid', {});
+      let after = request.resource.data.get('taskClaimsByUid', {});
+      let changed = after.diff(before).affectedKeys();
+      let oldTaskIds = before.get(request.auth.uid, []);
+      let newTaskIds = after.get(request.auth.uid, []);
+      return isMember(groupId)
+        && before is map
+        && after is map
+        && changed.hasOnly([request.auth.uid])
+        && changed.hasAny([request.auth.uid])
+        && oldTaskIds is list
+        && newTaskIds is list
+        && newTaskIds.size() == oldTaskIds.size() + 1
+        && newTaskIds.hasAll(oldTaskIds)
+        && newTaskIds[newTaskIds.size() - 1] is number;
+    }
+
+    function validGatheringMemberUpdate(groupId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return changed.hasOnly([
+          'participantDecisionsByUid',
+          'expensesByUid',
+          'taskClaimsByUid'
+        ])
+        && (
+          !changed.hasAny(['participantDecisionsByUid'])
+          || validSelfGatheringDecision(groupId)
+        )
+        && (
+          !changed.hasAny(['expensesByUid'])
+          || validSelfGatheringExpense(groupId)
+        )
+        && (
+          !changed.hasAny(['taskClaimsByUid'])
+          || validSelfGatheringTaskClaim(groupId)
+        );
+    }
+
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
@@ -322,11 +400,7 @@ service cloud.firestore {
           && request.resource.data.createdById == request.auth.uid;
         allow update: if isMember(groupId)
           && request.resource.data.createdById == resource.data.createdById
-          && (
-            resource.data.createdById == request.auth.uid
-            || request.resource.data.diff(resource.data).affectedKeys()
-              .hasOnly(['id', 'participants', 'attendees', 'expenses', 'tasks', 'total'])
-          );
+          && (resource.data.createdById == request.auth.uid || validGatheringMemberUpdate(groupId));
         allow delete: if isMember(groupId) && resource.data.createdById == request.auth.uid;
       }
     }

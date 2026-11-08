@@ -15,7 +15,9 @@ VITE_FIREBASE_STORAGE_BUCKET
 VITE_FIREBASE_MESSAGING_SENDER_ID
 ```
 
-The app listens to the `gatherings`, `fundPaymentRequests`, and `fundBalances` collections. Gathering additions, edits, and removals are written to Firestore and other clients receive live snapshots. Each payment request stores its `contributions` array and a `confirmationTimes` map keyed by member name. Confirmation timestamps use Firestore server timestamps; balance updates and payment approvals run in a Firestore transaction. With no Firebase configuration, the page clearly indicates that data is local to the current browser.
+The app listens under `groups/{groupId}/gatherings`, `groups/{groupId}/transactions`, and `groups/{groupId}/fund/{groupId}`; other clients receive live snapshots. New contribution requests store participant UIDs and names, with payment statuses updated by UID; individual payment confirmations are documents in each transaction's `confirmations` subcollection. Balance updates and approvals run in Firestore transactions. Without Firebase configuration, the app uses in-memory state in the current page; this is not durable offline storage.
+
+Gathering documents retain organizer-managed event data. Member RSVPs are stored in `participantDecisionsByUid`, member expenses are appended under `expensesByUid`, and task claims are stored in `taskClaimsByUid`. Firestore rules restrict each member to their own entries; legacy gathering arrays remain readable. Deploy these rules before deploying the client that writes the UID-scoped fields.
 
 Firebase Auth supports account registration and sign-in, and group membership is stored under `groups/{groupId}/members`. Group settings support member roles, invite links, ownership transfer, leaving, and owner-only group deletion. Deploy the repository's `firestore.rules` before using a live project; client-side visibility checks are convenience only, and the rules enforce the actual permissions.
 

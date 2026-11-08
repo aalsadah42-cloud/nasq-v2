@@ -1,6 +1,8 @@
 import {
   collection,
+  deleteField,
   doc,
+  FieldPath,
   getDocs,
   onSnapshot,
   runTransaction,
@@ -178,12 +180,40 @@ export async function mutateSyncedGathering<T extends { id: string }>(
   return runTransaction(firestore, async (transaction) => {
     const snapshot = await transaction.get(ref)
     if (!snapshot.exists()) throw new Error('تعذر العثور على الجمعة.')
-    const next = update(decode(snapshot.id, snapshot.data()))
+    const current = decode(snapshot.id, snapshot.data())
+    const next = update(current)
     if (next === null) {
       transaction.delete(ref)
       return null
     }
-    transaction.set(ref, removeUndefinedValues(next) as T)
+    const currentData = current as Record<string, unknown>
+    const nextData = next as Record<string, unknown>
+    const perMemberMaps = new Set(['participantDecisionsByUid', 'expensesByUid', 'taskClaimsByUid'])
+    for (const key of new Set([...Object.keys(currentData), ...Object.keys(nextData)])) {
+      if (JSON.stringify(currentData[key]) === JSON.stringify(nextData[key])) continue
+      const beforeMap = currentData[key]
+      const afterMap = nextData[key]
+      if (perMemberMaps.has(key) && afterMap && typeof afterMap === 'object' && !Array.isArray(afterMap)) {
+        const oldMap = beforeMap && typeof beforeMap === 'object' && !Array.isArray(beforeMap)
+          ? beforeMap as Record<string, unknown>
+          : {}
+        const newMap = afterMap as Record<string, unknown>
+        for (const mapKey of new Set([...Object.keys(oldMap), ...Object.keys(newMap)])) {
+          if (JSON.stringify(oldMap[mapKey]) === JSON.stringify(newMap[mapKey])) continue
+          transaction.update(
+            ref,
+            new FieldPath(key, mapKey),
+            newMap[mapKey] === undefined ? deleteField() : removeUndefinedValues(newMap[mapKey]),
+          )
+        }
+        continue
+      }
+      transaction.update(
+        ref,
+        new FieldPath(key),
+        nextData[key] === undefined ? deleteField() : removeUndefinedValues(nextData[key]),
+      )
+    }
     return next
   })
 }
