@@ -1,7 +1,16 @@
 const admin = require('firebase-admin');
-const serviceAccount = require('./serviceAccountKey.json');
+const fs = require('fs');
+const path = require('path');
 
-// تهيئة تطبيق Firebase Admin
+const keyPath = path.join(__dirname, 'serviceAccountKey.json');
+
+if (!fs.existsSync(keyPath)) {
+  console.error('❌ خطأ: ملف serviceAccountKey.json غير موجود في مجلد المشروع الرئيسي!');
+  process.exit(1);
+}
+
+const serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
@@ -21,18 +30,21 @@ async function migrateGroups() {
       const groupId = groupDoc.id;
       const groupData = groupDoc.data();
 
-      // جلب جميع الأعضاء من الـ subcollection الخاطة بالمجموعة
+      // جلب جميع الأعضاء
       const membersSnapshot = await db.collection('groups').doc(groupId).collection('members').get();
       const memberUids = membersSnapshot.docs.map(doc => doc.id);
       const memberCount = memberUids.length;
 
-      // التأكد من وجود رمز دعوة أو توليد رمز افتراضي إذا لم يوجد
+      // تحديد createdBy أو استخدام العضو الأول كمنشئ للمجموعة إن لم توجد
+      const fallbackCreatedBy = memberUids.length > 0 ? memberUids[0] : 'system_migrated';
+      const createdBy = groupData.createdBy || fallbackCreatedBy;
+
       const inviteCode = groupData.inviteCode || Math.random().toString(36).substring(2, 8).toUpperCase();
 
-      // تحديث وثيقة المجموعة بالحقول الجديدة
       await db.collection('groups').doc(groupId).update({
         memberUids: memberUids,
         memberCount: memberCount,
+        createdBy: createdBy,
         inviteCode: inviteCode
       });
 
@@ -44,8 +56,8 @@ async function migrateGroups() {
   } catch (error) {
     console.error('❌ حدث خطأ أثناء الترحيل:', error);
   } finally {
-    process.exit();
+    process.exit(0);
   }
 }
 
-migrateGroups();
+migrateGroups();node migrate-groups.cjs
