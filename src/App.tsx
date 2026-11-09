@@ -61,13 +61,14 @@ import './App.css'
 
 type View = 'overview' | 'funds' | 'workspace' | 'gatherings' | 'split' | 'activity'
 type CreateKind = 'fund' | 'gathering'
-type Fund = { id: string; title: string; members: number; memberNames: string[]; balance: number; icon: string; color: string; due: string }
+type Fund = { id: string; title: string; members: number; memberNames: string[]; balance: number; role: UserGroup['role']; icon: string; color: string; due: string }
 type GatheringDecision = 'joined' | 'declined' | 'pending'
 type GatheringParticipant = { uid?: string; name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid'; paymentMethod?: PaymentMethod; paymentDetails?: string }
 type GatheringExpense = { id: number; description: string; payer: string; amount: number }
 type GatheringTask = { id: number; title: string; assignedTo?: string }
 type Gathering = {
   id: string
+  workspaceId: string
   createdById: string
   createdByName: string
   title: string
@@ -110,16 +111,16 @@ type FundPaymentState = {
   replaceCloudRequests: (requests: KattahRequest[]) => void
   replaceCloudBalances: (balances: Record<string, number>) => void
   addKattahRequest: (request: KattahRequest) => void
-  confirmContribution: (requestId: number, memberUid: string) => boolean
-  approveContribution: (requestId: number, memberUid: string, fallbackBalance: number) => Contribution | null
-  rejectContribution: (requestId: number, memberUid: string) => boolean
-  approveAwaitingContributions: (requestId: number, fallbackBalance: number) => Contribution[]
+  confirmContribution: (workspaceId: string, requestId: number, memberUid: string) => boolean
+  approveContribution: (workspaceId: string, requestId: number, memberUid: string, fallbackBalance: number) => Contribution | null
+  rejectContribution: (workspaceId: string, requestId: number, memberUid: string) => boolean
+  approveAwaitingContributions: (workspaceId: string, requestId: number, fallbackBalance: number) => Contribution[]
   adjustFundBalance: (workspaceId: string, amount: number, fallbackBalance: number) => void
 }
 type FundActivity = { id: number; workspaceId: string; title: string; detail: string; amount: string; kind: 'pending' | 'success' | 'event'; time: string }
 
 const navigation: { id: View; label: string; icon: LucideIcon }[] = [
-  { id: 'overview', label: 'نظرة عامة', icon: LayoutDashboard },
+  { id: 'overview', label: 'الصفحة الرئيسية', icon: LayoutDashboard },
   { id: 'funds', label: 'الصناديق', icon: Wallet },
   { id: 'gatherings', label: 'الجمعات', icon: UsersRound },
   { id: 'split', label: 'القسمة السريعة', icon: ArrowLeftRight },
@@ -132,10 +133,10 @@ const useFundPaymentStore = create<FundPaymentState>()((set) => ({
   replaceCloudRequests: (requests) => set({ kattahRequests: requests }),
   replaceCloudBalances: (balances) => set({ fundBalances: balances }),
   addKattahRequest: (request) => set((state) => ({ kattahRequests: [request, ...state.kattahRequests] })),
-  confirmContribution: (requestId, memberUid) => {
+  confirmContribution: (workspaceId, requestId, memberUid) => {
     let updated = false
     set((state) => ({
-      kattahRequests: state.kattahRequests.map((request) => request.id === requestId
+      kattahRequests: state.kattahRequests.map((request) => request.workspaceId === workspaceId && request.id === requestId
         ? {
           ...request,
           contributions: request.contributions.map((contribution) => {
@@ -148,16 +149,16 @@ const useFundPaymentStore = create<FundPaymentState>()((set) => ({
     }))
     return updated
   },
-  approveContribution: (requestId, memberUid, fallbackBalance) => {
+  approveContribution: (workspaceId, requestId, memberUid, fallbackBalance) => {
     let approved: Contribution | null = null
     set((state) => {
-      const request = state.kattahRequests.find((item) => item.id === requestId)
+      const request = state.kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
       const contribution = request?.contributions.find((item) => item.uid === memberUid && item.status === 'awaiting')
       if (!request || !contribution) return state
       approved = { ...contribution, status: 'paid' }
       const approvedContribution = approved
       return {
-        kattahRequests: state.kattahRequests.map((item) => item.id === requestId
+        kattahRequests: state.kattahRequests.map((item) => item.workspaceId === workspaceId && item.id === requestId
           ? { ...item, contributions: item.contributions.map((itemContribution) => itemContribution.uid === memberUid ? approvedContribution : itemContribution) }
           : item),
         fundBalances: {
@@ -168,10 +169,10 @@ const useFundPaymentStore = create<FundPaymentState>()((set) => ({
     })
     return approved
   },
-  rejectContribution: (requestId, memberUid) => {
+  rejectContribution: (workspaceId, requestId, memberUid) => {
     let updated = false
     set((state) => ({
-      kattahRequests: state.kattahRequests.map((request) => request.id === requestId
+      kattahRequests: state.kattahRequests.map((request) => request.workspaceId === workspaceId && request.id === requestId
         ? {
           ...request,
           contributions: request.contributions.map((contribution) => {
@@ -184,16 +185,16 @@ const useFundPaymentStore = create<FundPaymentState>()((set) => ({
     }))
     return updated
   },
-  approveAwaitingContributions: (requestId, fallbackBalance) => {
+  approveAwaitingContributions: (workspaceId, requestId, fallbackBalance) => {
     let approved: Contribution[] = []
     set((state) => {
-      const request = state.kattahRequests.find((item) => item.id === requestId)
+      const request = state.kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
       if (!request) return state
       approved = request.contributions.filter((contribution) => contribution.status === 'awaiting')
       if (!approved.length) return state
       const total = approved.reduce((sum, contribution) => sum + contribution.amount, 0)
       return {
-        kattahRequests: state.kattahRequests.map((item) => item.id === requestId
+        kattahRequests: state.kattahRequests.map((item) => item.workspaceId === workspaceId && item.id === requestId
           ? { ...item, contributions: item.contributions.map((contribution) => contribution.status === 'awaiting' ? { ...contribution, status: 'paid' } : contribution) }
           : item),
         fundBalances: {
@@ -233,7 +234,7 @@ const isGatheringTask = (value: unknown): value is GatheringTask =>
   && typeof value.title === 'string'
   && (value.assignedTo === undefined || typeof value.assignedTo === 'string')
 
-const decodeGathering = (id: string, value: DocumentData): Gathering => {
+const decodeGathering = (id: string, value: DocumentData, workspaceId: string): Gathering => {
   const participantDecisionsByUid = value.participantDecisionsByUid ?? {}
   const expensesByUid = value.expensesByUid ?? {}
   const taskClaimsByUid = value.taskClaimsByUid ?? {}
@@ -287,6 +288,7 @@ const decodeGathering = (id: string, value: DocumentData): Gathering => {
 
   return {
     id,
+    workspaceId,
     createdById: value.createdById,
     createdByName: value.createdByName,
     title: value.title,
@@ -347,6 +349,52 @@ const formatNumber = (value: number | string) => {
 }
 
 const money = (value: number) => formatNumber(value)
+
+type DueUrgency = 'soon' | 'due' | 'overdue'
+
+function dueDaysRemaining(due: string, cadence: string, now = new Date()): number | null {
+  const monthlyDay = cadence === 'شهري'
+    ? Number(due.match(/^(?:monthly:|يوم\s*)?(\d{1,2})(?:\s|$)/i)?.[1])
+    : Number.NaN
+  let dueDate: Date
+  if (Number.isInteger(monthlyDay) && monthlyDay >= 1 && monthlyDay <= 31) {
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+    dueDate = new Date(now.getFullYear(), now.getMonth(), Math.min(monthlyDay, lastDay))
+  } else {
+    const isoDate = due.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (isoDate) dueDate = new Date(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]))
+    else {
+      const parsed = new Date(due)
+      if (Number.isNaN(parsed.getTime())) return null
+      dueDate = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+    }
+  }
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((dueDate.getTime() - today.getTime()) / 86_400_000)
+}
+
+function dueUrgency(due: string, cadence: string, now?: Date): DueUrgency | null {
+  const days = dueDaysRemaining(due, cadence, now)
+  if (days === null || days > 3) return null
+  return days < 0 ? 'overdue' : days === 0 ? 'due' : 'soon'
+}
+
+function dueLabel(due: string, cadence: string): string {
+  const monthlyDay = cadence === 'شهري' ? Number(due.match(/^(?:monthly:|يوم\s*)?(\d{1,2})(?:\s|$)/i)?.[1]) : Number.NaN
+  if (Number.isInteger(monthlyDay) && monthlyDay >= 1 && monthlyDay <= 31) return `يوم ${formatNumber(monthlyDay)} من كل شهر`
+  const isoDate = due.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!isoDate) return due
+  return new Intl.DateTimeFormat('ar-SA', { calendar: 'gregory', day: 'numeric', month: 'long', year: 'numeric', numberingSystem: 'latn' })
+    .format(new Date(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3])))
+}
+
+function DueBadge({ due, cadence, now }: { due: string; cadence: string; now?: Date }) {
+  const urgency = dueUrgency(due, cadence, now)
+  if (!urgency) return null
+  const days = dueDaysRemaining(due, cadence, now)
+  const label = urgency === 'overdue' ? 'متأخر' : urgency === 'due' ? 'مستحق اليوم' : `يستحق خلال ${formatNumber(days ?? 0)} أيام`
+  return <span className={`due-badge due-${urgency}`}><i />{label}</span>
+}
 
 type DeadlinePreset = '30m' | '1h' | '2h' | 'before24h' | 'before6h' | 'before1h' | 'previousEvening'
 type DeadlineOption = { id: DeadlinePreset; labelAr: string; labelEn: string; at: number }
@@ -446,6 +494,7 @@ function App() {
     members: group.memberNames.length,
     memberNames: group.memberNames,
     balance: fundBalances[group.id] ?? group.balance,
+    role: group.role,
     icon: '👥',
     color: ['mint', 'lavender', 'peach'][index % 3],
     due: 'لا توجد التزامات قادمة',
@@ -455,20 +504,14 @@ function App() {
   const total = Number(amount) || 0
   const evenShare = people.length ? total / people.length : 0
   const selectedWorkspace = allFunds.find((fund) => fund.id === selectedWorkspaceId)
-  const canManageGroup = userGroups.find((group) => group.id === selectedWorkspaceId)?.role === 'owner'
-    || userGroups.find((group) => group.id === selectedWorkspaceId)?.role === 'admin'
+  const canManageGroup = (workspaceId: string) => {
+    const role = userGroups.find((group) => group.id === workspaceId)?.role
+    return role === 'owner' || role === 'admin'
+  }
   const pageTitle = activeView === 'workspace'
     ? selectedWorkspace?.title ?? 'الصندوق'
-    : navigation.find((item) => item.id === activeView)?.label ?? 'نظرة عامة'
+    : navigation.find((item) => item.id === activeView)?.label ?? 'الصفحة الرئيسية'
   const selectedGroup = userGroups.find((group) => group.id === selectedWorkspaceId)
-  const activeRequests = kattahRequests.filter((request) => request.workspaceId === selectedWorkspaceId)
-  const amountOwedToUser = reimbursements
-    .filter((item) => item.workspaceId === selectedWorkspaceId && item.memberUid === currentUserId && item.status === 'awaiting-receipt')
-    .reduce((sum, item) => sum + item.amount, 0)
-  const amountOwedByUser = activeRequests
-    .flatMap((request) => request.contributions)
-    .filter((contribution) => contribution.uid === currentUserId && ['unpaid', 'rejected'].includes(contribution.status))
-    .reduce((sum, contribution) => sum + contribution.amount, 0)
 
   useEffect(() => {
     if (!auth) return
@@ -542,7 +585,6 @@ function App() {
   }, [location.pathname, setRoute])
 
   useEffect(() => {
-    const group = userGroups.find((item) => item.id === selectedWorkspaceId)
     replaceCloudRequests([])
     replaceCloudBalances({})
     replaceCloudGatherings([])
@@ -551,78 +593,92 @@ function App() {
     setFundHistory([])
     setGatheringSyncError('')
     setFirestoreError('')
-    if (!hasFirebaseConfig || !currentUser || !group || !selectedWorkspaceId) {
+    const groupIds = userGroups.map((group) => group.id)
+    if (!hasFirebaseConfig || !currentUser || groupIds.length === 0) {
       setFirestoreStatus('local')
       return
     }
 
-    let receivedRequests = false
-    let receivedBalances = false
-    let receivedGatherings = false
-    let receivedOperations = false
     let hasSyncError = false
     let cancelled = false
-    let unsubscribePayments = () => {}
-    let unsubscribeGatherings = () => {}
-    let unsubscribeOperations = () => {}
+    const unsubscribers: (() => void)[] = []
+    const requestsByGroup = new Map<string, KattahRequest[]>()
+    const balancesByGroup = new Map<string, Record<string, number>>()
+    const gatheringsByGroup = new Map<string, Gathering[]>()
+    const obligationsByGroup = new Map<string, Obligation[]>()
+    const reimbursementsByGroup = new Map<string, Reimbursement[]>()
+    const ready = {
+      requests: new Set<string>(),
+      balances: new Set<string>(),
+      gatherings: new Set<string>(),
+      obligations: new Set<string>(),
+      reimbursements: new Set<string>(),
+    }
     setFirestoreStatus('connecting')
     const markConnected = () => {
-      if (!hasSyncError && receivedRequests && receivedBalances && receivedGatherings && receivedOperations) {
+      const allReady = Object.values(ready).every((receivedGroups) => groupIds.every((groupId) => receivedGroups.has(groupId)))
+      if (!hasSyncError && allReady) {
         setFirestoreStatus('connected')
         setFirestoreError('')
       }
     }
-    void import('./fundPaymentSync').then(({ subscribeToFundPayments, subscribeToGatherings }) => {
+    const handleSyncError = (kind: string, error: Error) => {
+      hasSyncError = true
+      console.error(`Firestore ${kind} sync failed:`, error)
+      setFirestoreStatus('error')
+      setFirestoreError(error.message)
+    }
+    void import('./fundPaymentSync').then((paymentSync) => {
       if (cancelled) return
-      unsubscribePayments = subscribeToFundPayments(
-        selectedWorkspaceId,
-        (requests) => {
-          replaceCloudRequests(requests)
-          receivedRequests = true
-          markConnected()
-        },
-        (balances) => {
-          replaceCloudBalances(balances)
-          receivedBalances = true
-          markConnected()
-        },
-        (error) => {
-          hasSyncError = true
-          console.error('Firestore fund-payment sync failed:', error)
-          setFirestoreStatus('error')
-          setFirestoreError(error.message)
-        },
-      )
-      unsubscribeGatherings = subscribeToGatherings(
-        selectedWorkspaceId,
-        decodeGathering,
-        (cloudGatherings) => {
-          replaceCloudGatherings(cloudGatherings)
-          setGatheringSyncError('')
-          receivedGatherings = true
-          markConnected()
-        },
-        (error) => {
-          hasSyncError = true
-          console.error('Firestore gathering sync failed:', error)
-          setFirestoreStatus('error')
-          setFirestoreError(error.message)
-          setGatheringSyncError(error.message)
-        },
-      )
-      unsubscribeOperations = subscribeToFundOperations(
-        selectedWorkspaceId,
-        setObligations,
-        setReimbursements,
-        (error) => {
-          hasSyncError = true
-          console.error('Firestore fund-operation sync failed:', error)
-          setFirestoreStatus('error')
-          setFirestoreError(error.message)
-        },
-      )
-      receivedOperations = true
-      markConnected()
+      for (const groupId of groupIds) {
+        unsubscribers.push(paymentSync.subscribeToFundPayments(
+          groupId,
+          (requests) => {
+            requestsByGroup.set(groupId, requests)
+            replaceCloudRequests([...requestsByGroup.values()].flat())
+            ready.requests.add(groupId)
+            markConnected()
+          },
+          (balances) => {
+            balancesByGroup.set(groupId, balances)
+            replaceCloudBalances(Object.assign({}, ...balancesByGroup.values()))
+            ready.balances.add(groupId)
+            markConnected()
+          },
+          (error) => handleSyncError('fund-payment', error),
+        ))
+        unsubscribers.push(paymentSync.subscribeToGatherings(
+          groupId,
+          (id, value) => decodeGathering(id, value, groupId),
+          (gatherings) => {
+            gatheringsByGroup.set(groupId, gatherings)
+            replaceCloudGatherings([...gatheringsByGroup.values()].flat())
+            setGatheringSyncError('')
+            ready.gatherings.add(groupId)
+            markConnected()
+          },
+          (error) => {
+            handleSyncError('gathering', error)
+            setGatheringSyncError(error.message)
+          },
+        ))
+        unsubscribers.push(subscribeToFundOperations(
+          groupId,
+          (items) => {
+            obligationsByGroup.set(groupId, items)
+            setObligations([...obligationsByGroup.values()].flat())
+            ready.obligations.add(groupId)
+            markConnected()
+          },
+          (items) => {
+            reimbursementsByGroup.set(groupId, items)
+            setReimbursements([...reimbursementsByGroup.values()].flat())
+            ready.reimbursements.add(groupId)
+            markConnected()
+          },
+          (error) => handleSyncError('fund-operation', error),
+        ))
+      }
     }).catch((error: unknown) => {
       console.error('Firestore fund-payment sync initialization failed:', error)
       setFirestoreStatus('error')
@@ -630,11 +686,9 @@ function App() {
     })
     return () => {
       cancelled = true
-      unsubscribePayments()
-      unsubscribeGatherings()
-      unsubscribeOperations()
+      unsubscribers.forEach((unsubscribe) => unsubscribe())
     }
-  }, [currentUser, selectedWorkspaceId, userGroups, replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setGatheringSyncError])
+  }, [currentUser, userGroups, replaceCloudBalances, replaceCloudGatherings, replaceCloudRequests, setGatheringSyncError])
 
   const openView = (view: View) => {
     const path = view === 'overview' ? '/' : view === 'funds' || view === 'workspace' ? '/workspaces' : `/${view}`
@@ -666,6 +720,25 @@ function App() {
     setMenuOpen(false)
     setSidebarOpen(false)
     setSplitSaved(false)
+  }
+
+  const openGroupSection = (workspaceId: string, view: Exclude<View, 'overview' | 'workspace'>) => {
+    if (view === 'funds') {
+      openWorkspace(workspaceId)
+      return
+    }
+    navigate(`/${view}`)
+    setRoute({ activeView: view, selectedWorkspaceId: workspaceId })
+    setMenuOpen(false)
+    setSidebarOpen(false)
+    setSplitSaved(false)
+  }
+
+  const openGroupSettings = (workspaceId: string) => {
+    const group = userGroups.find((item) => item.id === workspaceId)
+    if (!group || !['owner', 'admin'].includes(group.role)) return
+    setRoute({ activeView: 'overview', selectedWorkspaceId: workspaceId })
+    setGroupSettingsOpen(true)
   }
 
   const handleLogin = async (email: string, password: string) => {
@@ -752,12 +825,12 @@ function App() {
       setGatheringItems(groupId, (current) => current.flatMap((gathering) => {
         if (gathering.id !== gatheringId) return [gathering]
         const next = update(gathering)
-        return next ? [decodeGathering(next.id, { ...next })] : []
+        return next ? [decodeGathering(next.id, { ...next }, groupId)] : []
       }))
       return
     }
     void import('./fundPaymentSync').then(({ mutateSyncedGathering }) =>
-      mutateSyncedGathering(groupId, gatheringId, decodeGathering, update))
+      mutateSyncedGathering(groupId, gatheringId, (id, value) => decodeGathering(id, value, groupId), update))
       .then(() => setGatheringSyncError(''))
       .catch((error: unknown) => {
         console.error('Updating a Firestore gathering failed:', error)
@@ -818,6 +891,7 @@ function App() {
       try {
         await createGathering(selectedWorkspaceId, {
           id: `gathering-${Date.now()}`,
+          workspaceId: selectedWorkspaceId,
           createdById: currentUser.uid,
           createdByName: currentUserName,
           title: name,
@@ -854,10 +928,10 @@ function App() {
     window.setTimeout(() => setCreatedMessage(''), 3500)
   }
 
-  const voteOnGathering = (gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => {
-    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+  const voteOnGathering = (workspaceId: string, gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => {
+    const gathering = gatheringItems.find((item) => item.workspaceId === workspaceId && item.id === gatheringId)
     if (!currentUser || !gathering || gathering.createdById === currentUserId || gathering.deadlineAt <= Date.now()) return
-    mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
+    mutateGathering(workspaceId, gatheringId, (item) => {
       if (item.createdById === currentUserId || item.deadlineAt <= Date.now()) return item
       return {
         ...item,
@@ -870,7 +944,7 @@ function App() {
   }
 
   const cancelGathering = (gatheringId: string) => {
-    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const gathering = gatheringItems.find((item) => item.workspaceId === selectedWorkspaceId && item.id === gatheringId)
     if (!currentUser || !gathering || gathering.createdById !== currentUserId) return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, () => null)
   }
@@ -905,7 +979,7 @@ function App() {
   }
 
   const addGatheringTask = (gatheringId: string, title: string) => {
-    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const gathering = gatheringItems.find((item) => item.workspaceId === selectedWorkspaceId && item.id === gatheringId)
     const normalizedTitle = title.trim()
     if (!currentUser || !gathering || gathering.createdById !== currentUserId || !normalizedTitle) return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
@@ -915,7 +989,7 @@ function App() {
   }
 
   const claimGatheringTask = (gatheringId: string, taskId: number) => {
-    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const gathering = gatheringItems.find((item) => item.workspaceId === selectedWorkspaceId && item.id === gatheringId)
     const currentParticipant = gathering?.participants.find((person) => person.uid === currentUserId)
     if (!gathering || currentParticipant?.decision !== 'joined') return
     mutateGathering(selectedWorkspaceId ?? '', gatheringId, (item) => {
@@ -951,7 +1025,7 @@ function App() {
   }
 
   const setGatheringSettlementStatus = (gatheringId: string, memberName: string, status: 'pending' | 'paid') => {
-    const gathering = gatheringItems.find((item) => item.id === gatheringId)
+    const gathering = gatheringItems.find((item) => item.workspaceId === selectedWorkspaceId && item.id === gatheringId)
     if (!currentUser || !gathering || gathering.createdById !== currentUserId) return
     const row = getSettlementRows(gathering).find((item) => item.name === memberName)
     if (!row || row.balance >= 0) return
@@ -976,8 +1050,8 @@ function App() {
     setFundHistory((current) => [{ id: Date.now(), workspaceId, title, detail, amount, kind, time: 'الآن' }, ...current])
   }
 
-  const confirmContribution = (requestId: number, memberUid: string) => {
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+  const confirmContribution = (workspaceId: string, requestId: number, memberUid: string) => {
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
     const contribution = request?.contributions.find((item) => item.uid === memberUid)
     if (!request || !contribution) return
     const memberName = contribution.name
@@ -992,14 +1066,14 @@ function App() {
       })
       return
     }
-    if (!confirmContributionInStore(requestId, memberUid)) return
+    if (!confirmContributionInStore(workspaceId, requestId, memberUid)) return
     if (request) addFundActivity(request.workspaceId, 'إشعار دفع بانتظار اعتماد المشرف', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
     showFundMessage('تم تسجيل الدفع بانتظار المراجعة. لن يُضاف المبلغ للرصيد حتى اعتماده.')
   }
 
-  const approveContribution = (requestId: number, memberUid: string) => {
-    if (!canManageGroup) return
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+  const approveContribution = (workspaceId: string, requestId: number, memberUid: string) => {
+    if (!canManageGroup(workspaceId)) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
     const contribution = request?.contributions.find((item) => item.uid === memberUid)
     if (!request || !contribution || contribution.status !== 'awaiting') return
     const memberName = contribution.name
@@ -1015,15 +1089,15 @@ function App() {
       })
       return
     }
-    const approved = approveContributionInStore(requestId, memberUid, workspace?.balance ?? 0)
+    const approved = approveContributionInStore(workspaceId, requestId, memberUid, workspace?.balance ?? 0)
     if (!approved) return
     addFundActivity(request.workspaceId, 'اعتماد مساهمة عضو', `${request.title} · ${memberName}`, `+ ${money(contribution.amount)} ر.س`, 'success')
     showFundMessage(`تم استلام دفعة ${memberName} واعتمادها وإضافتها إلى رصيد الصندوق.`)
   }
 
-  const rejectContribution = (requestId: number, memberUid: string) => {
-    if (!canManageGroup) return
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+  const rejectContribution = (workspaceId: string, requestId: number, memberUid: string) => {
+    if (!canManageGroup(workspaceId)) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
     const contribution = request?.contributions.find((item) => item.uid === memberUid)
     if (!request || !contribution) return
     const memberName = contribution.name
@@ -1038,14 +1112,14 @@ function App() {
       })
       return
     }
-    if (!rejectContributionInStore(requestId, memberUid)) return
+    if (!rejectContributionInStore(workspaceId, requestId, memberUid)) return
     if (request) addFundActivity(request.workspaceId, 'رفض إشعار الدفع', `${request.title} · ${memberName}`, `${money(contribution?.amount ?? 0)} ر.س`, 'pending')
     showFundMessage(`تم تسجيل أن حوالة ${memberName} لم تصل. يمكنه تأكيد الدفع مجددًا بعد التحويل.`)
   }
 
-  const approveAllContributions = (requestId: number) => {
-    if (!canManageGroup) return
-    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.id === requestId)
+  const approveAllContributions = (workspaceId: string, requestId: number) => {
+    if (!canManageGroup(workspaceId)) return
+    const request = useFundPaymentStore.getState().kattahRequests.find((item) => item.workspaceId === workspaceId && item.id === requestId)
     if (!request) return
     const workspace = allFunds.find((fund) => fund.id === request.workspaceId)
     if (hasFirebaseConfig) {
@@ -1059,15 +1133,15 @@ function App() {
       })
       return
     }
-    const pending = approveAwaitingInStore(requestId, workspace?.balance ?? 0)
+    const pending = approveAwaitingInStore(workspaceId, requestId, workspace?.balance ?? 0)
     if (!pending.length) return
     const totalApproved = pending.reduce((sum, contribution) => sum + contribution.amount, 0)
     addFundActivity(request.workspaceId, 'اعتماد جماعي للمساهمات', `${request.title} · ${formatNumber(pending.length)} أعضاء`, `+ ${money(totalApproved)} ر.س`, 'success')
     showFundMessage(`تم استلام واعتماد ${formatNumber(pending.length)} دفعة وإضافتها إلى رصيد الصندوق.`)
   }
 
-  const reportObligationPayment = (obligationId: number) => {
-    const obligation = obligations.find((item) => item.id === obligationId)
+  const reportObligationPayment = (workspaceId: string, obligationId: number) => {
+    const obligation = obligations.find((item) => item.workspaceId === workspaceId && item.id === obligationId)
     if (!obligation) return
     if (hasFirebaseConfig) {
       if (!currentUser) return
@@ -1081,13 +1155,13 @@ function App() {
       })
       return
     }
-    setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'awaiting' } : item))
+    setObligations((current) => current.map((item) => item.workspaceId === workspaceId && item.id === obligationId ? { ...item, status: 'awaiting' } : item))
     addFundActivity(obligation.workspaceId, 'إشعار سداد بانتظار الاعتماد', obligation.title, `${money(obligation.amount)} ر.س`, 'pending')
     showFundMessage('سُجل إشعار السداد وبانتظار اعتماد المشرف.')
   }
 
-  const approveObligationPayment = (obligationId: number) => {
-    const obligation = obligations.find((item) => item.id === obligationId)
+  const approveObligationPayment = (workspaceId: string, obligationId: number) => {
+    const obligation = obligations.find((item) => item.workspaceId === workspaceId && item.id === obligationId)
     if (!obligation || obligation.status !== 'awaiting') return
     if (hasFirebaseConfig) {
       void approveSyncedObligationPayment(obligation.workspaceId, obligationId).then((updated) => {
@@ -1100,7 +1174,7 @@ function App() {
       })
       return
     }
-    setObligations((current) => current.map((item) => item.id === obligationId ? { ...item, status: 'paid' } : item))
+    setObligations((current) => current.map((item) => item.workspaceId === workspaceId && item.id === obligationId ? { ...item, status: 'paid' } : item))
     const workspace = allFunds.find((fund) => fund.id === obligation.workspaceId)
     adjustFundBalance(obligation.workspaceId, -obligation.amount, workspace?.balance ?? 0)
     addFundActivity(obligation.workspaceId, 'اعتماد سداد التزام', obligation.title, `− ${money(obligation.amount)} ر.س`, 'success')
@@ -1189,8 +1263,8 @@ function App() {
     showFundMessage('تمت إضافة الالتزام إلى سجل الصندوق.')
   }
 
-  const decideReimbursement = (reimbursementId: number, status: Reimbursement['status']) => {
-    const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
+  const decideReimbursement = (workspaceId: string, reimbursementId: number, status: Reimbursement['status']) => {
+    const reimbursement = reimbursements.find((item) => item.workspaceId === workspaceId && item.id === reimbursementId)
     if (!reimbursement || reimbursement.status !== 'review') return
     if (hasFirebaseConfig) {
       if (status !== 'awaiting-receipt' && status !== 'rejected') return
@@ -1209,7 +1283,7 @@ function App() {
       })
       return
     }
-    setReimbursements((current) => current.map((item) => item.id === reimbursementId ? { ...item, status } : item))
+    setReimbursements((current) => current.map((item) => item.workspaceId === workspaceId && item.id === reimbursementId ? { ...item, status } : item))
     if (status === 'awaiting-receipt') {
       const workspace = allFunds.find((fund) => fund.id === reimbursement.workspaceId)
       adjustFundBalance(reimbursement.workspaceId, -reimbursement.amount, workspace?.balance ?? 0)
@@ -1221,8 +1295,8 @@ function App() {
     }
   }
 
-  const confirmReimbursementReceipt = (reimbursementId: number, received: boolean) => {
-    const reimbursement = reimbursements.find((item) => item.id === reimbursementId)
+  const confirmReimbursementReceipt = (workspaceId: string, reimbursementId: number, received: boolean) => {
+    const reimbursement = reimbursements.find((item) => item.workspaceId === workspaceId && item.id === reimbursementId)
     if (hasFirebaseConfig) {
       if (!currentUser || !reimbursement) return
       void confirmSyncedReimbursementReceipt(reimbursement.workspaceId, reimbursementId, currentUser.uid, received).then((updated) => {
@@ -1235,7 +1309,7 @@ function App() {
       })
       return
     }
-    setReimbursements((current) => current.map((item) => item.id === reimbursementId
+    setReimbursements((current) => current.map((item) => item.workspaceId === workspaceId && item.id === reimbursementId
       ? { ...item, status: received ? 'received' : 'objection' }
       : item))
     if (reimbursement) addFundActivity(reimbursement.workspaceId, received ? 'تأكيد استلام التعويض' : 'اعتراض: لم يصل التعويض', `${reimbursement.title} · ${reimbursement.member}`, `${money(reimbursement.amount)} ر.س`, received ? 'success' : 'pending')
@@ -1270,30 +1344,6 @@ function App() {
           <span className="brand-mark"><span /></span>
           <span className="brand-name">نسق<span className="brand-dot">.</span></span>
         </button>
-
-        <div className="workspace-switcher">
-          <div className="workspace-avatar">ع</div>
-          <div className="workspace-copy">
-            <span>{groupsLoading ? 'جارٍ تحميل المجموعات...' : 'المجموعة الحالية'}</span>
-            <select aria-label="إدارة المجموعات واختيار المجموعة" value={selectedWorkspaceId ?? '__empty__'} onChange={(event) => {
-              const value = event.target.value
-              if (value === '__create__') startCreate('fund')
-              else if (value === '__join__') {
-                setGroupActionError('')
-                setJoinCode('')
-                setCreatedInviteCode('')
-                setGroupModalOpen(true)
-              } else if (value === '__settings__') setGroupSettingsOpen(true)
-              else if (value && value !== '__empty__') openWorkspace(value)
-            }}>
-              <option value="__empty__" disabled>{groupsLoading ? 'جارٍ تحميل المجموعات...' : currentUser ? 'لا توجد مجموعات بعد' : 'سجّل الدخول للبدء'}</option>
-              {userGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-              <option value="__create__">إنشاء مجموعة جديدة</option>
-              <option value="__join__">الانضمام برمز</option>
-              {selectedGroup && <option value="__settings__">إعدادات المجموعة</option>}
-            </select>
-          </div>
-        </div>
 
         <span className="nav-heading">القائمة الرئيسية</span>
         <nav className="side-nav" aria-label="التنقل الرئيسي">
@@ -1344,18 +1394,9 @@ function App() {
         </header>
 
         <div className="page-content">
-          <div className={`payment-sync-notice sync-${gatheringSyncError || firestoreError ? 'error' : firestoreStatus}`} role="status">
-            {(gatheringSyncError || firestoreError) && `تعذرت مزامنة Firestore: ${gatheringSyncError || firestoreError}`}
-            {!gatheringSyncError && !firestoreError && firestoreStatus === 'connected' && `متصل بـ Firestore (${import.meta.env.VITE_FIREBASE_PROJECT_ID})؛ الجمعات والمساهمات تتزامن مباشرة.`}
-            {!gatheringSyncError && !firestoreError && firestoreStatus === 'connecting' && 'جار الاتصال بـ Firestore؛ إجراءات الدفع متوقفة حتى اكتمال المزامنة.'}
-            {!gatheringSyncError && !firestoreError && firestoreStatus === 'error' && 'تعذّر الاتصال بـ Firestore.'}
-            {!hasFirebaseConfig && 'Firebase غير مهيأ؛ لا يمكن تحميل المجموعات أو حفظها.'}
-            {hasFirebaseConfig && !authLoading && !currentUser && !firestoreError && 'سجّل الدخول لعرض مجموعاتك أو إنشاء مجموعة جديدة.'}
-            {currentUser && !groupsLoading && userGroups.length === 0 && !firestoreError && 'لا توجد مجموعات لهذا الحساب بعد؛ أنشئ مجموعة أو انضم برمز دعوة.'}
-          </div>
+          {(gatheringSyncError || firestoreError) && <div className="payment-sync-notice sync-error" role="alert">تعذرت مزامنة البيانات: {gatheringSyncError || firestoreError}</div>}
           {createdMessage && <div className="toast-message"><CircleCheck size={17} />{createdMessage}</div>}
           {activeView === 'overview' && <Overview
-            onNavigate={openView}
             onStartGroup={() => {
               setGroupActionError('')
               setJoinCode('')
@@ -1363,10 +1404,18 @@ function App() {
               setGroupModalOpen(true)
             }}
             currentUserName={currentUserName}
-            activeGroupName={selectedWorkspace?.title ?? 'لا توجد مجموعة نشطة'}
-            amountOwedToUser={amountOwedToUser}
-            amountOwedByUser={amountOwedByUser}
-            history={fundHistory}
+            groupsLoading={groupsLoading}
+            groups={allFunds}
+            gatherings={allGatherings}
+            requests={kattahRequests}
+            obligations={obligations}
+            currentUserId={currentUserId}
+            paymentActionsEnabled={firestoreStatus === 'local' || firestoreStatus === 'connected'}
+            onOpenGroupSection={openGroupSection}
+            onManageGroup={openGroupSettings}
+            onVote={voteOnGathering}
+            onConfirmContribution={confirmContribution}
+            onReportObligationPayment={reportObligationPayment}
           />}
           {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && !selectedWorkspace
             ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
@@ -1375,6 +1424,7 @@ function App() {
             onOpenWorkspace={openWorkspace}
             onCreate={() => startCreate('fund')}
             currentUserId={currentUserId}
+            selectedWorkspaceId={selectedWorkspaceId ?? ''}
             canManageGroup={canManageGroup}
             funds={allFunds}
             workspace={activeView === 'workspace' ? selectedWorkspace : undefined}
@@ -1402,8 +1452,8 @@ function App() {
             onLanguageChange={setGatheringsLanguage}
             onNavigate={openView}
             onCreate={() => startCreate('gathering')}
-            gatherings={allGatherings}
-            onVote={voteOnGathering}
+            gatherings={allGatherings.filter((gathering) => gathering.workspaceId === selectedWorkspaceId)}
+            onVote={(gatheringId, decision) => voteOnGathering(selectedWorkspaceId ?? '', gatheringId, decision)}
             onCancelGathering={cancelGathering}
             onAddLateParticipant={addLateGatheringParticipant}
             onAddExpense={addGatheringExpense}
@@ -1412,7 +1462,7 @@ function App() {
             onSetSettlementStatus={setGatheringSettlementStatus}
             onCopySettlementDetails={copySettlementDetails}
             onDeadline={(gatheringId, attendees) => {
-              const gathering = gatheringItems.find((item) => item.id === gatheringId)
+              const gathering = gatheringItems.find((item) => item.workspaceId === selectedWorkspaceId && item.id === gatheringId)
               if (gathering) showFundMessage(gatheringsLanguage === 'ar'
                 ? `انتهى التصويت على «${gathering.title}». العدد النهائي: ${attendees} مشارك.`
                 : `RSVP closed for "${gathering.title}". Final count: ${attendees} attendees.`)
@@ -1575,67 +1625,115 @@ function App() {
   )
 }
 
-function Overview({ onNavigate, onStartGroup, currentUserName, activeGroupName, amountOwedToUser, amountOwedByUser, history }: {
-  onNavigate: (view: View) => void
+function Overview({ onStartGroup, currentUserName, groupsLoading, groups, gatherings, requests, obligations, currentUserId, paymentActionsEnabled, onOpenGroupSection, onManageGroup, onVote, onConfirmContribution, onReportObligationPayment }: {
   onStartGroup: () => void
   currentUserName: string
-  activeGroupName: string
-  amountOwedToUser: number
-  amountOwedByUser: number
-  history: FundActivity[]
+  groupsLoading: boolean
+  groups: Fund[]
+  gatherings: Gathering[]
+  requests: KattahRequest[]
+  obligations: Obligation[]
+  currentUserId: string
+  paymentActionsEnabled: boolean
+  onOpenGroupSection: (workspaceId: string, view: Exclude<View, 'overview' | 'workspace'>) => void
+  onManageGroup: (workspaceId: string) => void
+  onVote: (workspaceId: string, gatheringId: string, decision: Exclude<GatheringDecision, 'pending'>) => void
+  onConfirmContribution: (workspaceId: string, requestId: number, memberUid: string) => void
+  onReportObligationPayment: (workspaceId: string, obligationId: number) => void
 }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const pendingGatherings = gatherings.filter((gathering) => gathering.deadlineAt > now
+    && gathering.participants.some((participant) => participant.uid === currentUserId && participant.decision === 'pending'))
+  const upcomingGatherings = gatherings.filter((gathering) => gathering.eventAt > now
+    && gathering.participants.some((participant) => participant.uid === currentUserId && participant.decision === 'joined'))
+    .sort((left, right) => left.eventAt - right.eventAt)
+    .slice(0, 5)
+  const pendingContributions = requests.flatMap((request) => request.contributions
+    .filter((contribution) => contribution.uid === currentUserId && ['unpaid', 'rejected'].includes(contribution.status))
+    .map((contribution) => ({ request, contribution })))
+  const dueObligations = obligations.filter((obligation) => obligation.status !== 'paid' && obligation.status !== 'awaiting'
+    && (obligation.status === 'due' || dueUrgency(obligation.due, obligation.cadence, new Date(now))))
+  const dueContributions = pendingContributions.filter(({ request }) => dueUrgency(request.due, request.cadence, new Date(now)))
+  const dueCount = dueObligations.length + dueContributions.length
+
   return (
     <>
       <section className="overview-welcome">
         <div>
           <div className="date-line"><CalendarDays size={15} /> نسق · مساحة مجموعاتك</div>
           <h1>هلا {currentUserName} <span>👋</span></h1>
-          <p>ملخص سريع لحسابك في المجموعة النشطة.</p>
-          <button className="button-primary welcome-cta" onClick={onStartGroup}><Plus size={16} /> ابدأ مجموعة</button>
+          <p>كل مجموعاتك والتزاماتك المهمة في مكان واحد.</p>
         </div>
-        <div className="overview-balance" aria-label={`ملخص المستحقات في ${activeGroupName}`}>
-          <div className="overview-balance-heading"><span>المجموعة النشطة</span><strong>{activeGroupName}</strong></div>
-          <div className="overview-balance-items">
-            <div className="overview-balance-item owed-to-user"><span>إجمالي ما لك</span><strong>{money(amountOwedToUser)} <small>ر.س</small></strong></div>
-            <div className="overview-balance-item owed-by-user"><span>إجمالي ما عليك</span><strong>{money(amountOwedByUser)} <small>ر.س</small></strong></div>
+        <button className="button-primary welcome-cta" onClick={onStartGroup}><Plus size={16} /> انضمام أو إنشاء مجموعة</button>
+      </section>
+
+      {dueCount > 0 && <div className="dashboard-due-notice" role="status"><Bell size={17} /><span><strong>لديك {formatNumber(dueCount)} {dueCount === 1 ? 'استحقاق' : 'استحقاقات'} قريب{dueCount === 1 ? '' : 'ة'}</strong><small>تأكد من دفع المستحقات قبل تأخرها.</small></span></div>}
+
+      <section className="dashboard-groups-section">
+        <div className="panel-heading"><div><h2>مجموعاتي</h2><p>اختر المجموعة والقسم الذي تريد الوصول إليه</p></div><span className="pill green-pill">{formatNumber(groups.length)} مجموعات</span></div>
+        <div className="dashboard-group-grid">
+          {groups.map((group) => (
+            <article className="dashboard-group-card" key={group.id}>
+              <button className="dashboard-group-main" onClick={() => onOpenGroupSection(group.id, 'funds')}>
+                <span className="overview-shortcut-icon shortcut-fund-icon"><UsersRound size={21} /></span>
+                <span className="dashboard-group-copy"><strong>{group.title}</strong><small>{formatNumber(group.members)} أعضاء</small></span>
+                <span className="dashboard-group-balance">{money(group.balance)} <small>ر.س</small></span>
+              </button>
+              <div className="dashboard-group-links">
+                <button onClick={() => onOpenGroupSection(group.id, 'funds')}><Wallet size={15} /> الصناديق</button>
+                <button onClick={() => onOpenGroupSection(group.id, 'gatherings')}><UsersRound size={15} /> الجمعات</button>
+                <button onClick={() => onOpenGroupSection(group.id, 'split')}><ArrowLeftRight size={15} /> القسمة السريعة</button>
+                {group.role !== 'member' && <button onClick={() => onManageGroup(group.id)}><Settings2 size={15} /> الإعدادات</button>}
+              </div>
+            </article>
+          ))}
+          {groupsLoading && <div className="dashboard-empty-groups"><p>جارٍ تحميل مجموعاتك...</p></div>}
+          {!groupsLoading && groups.length === 0 && <div className="dashboard-empty-groups"><p>لا توجد مجموعات مرتبطة بحسابك بعد.</p><button className="button-outline" onClick={onStartGroup}><Plus size={15} /> انضمام أو إنشاء مجموعة</button></div>}
+        </div>
+      </section>
+
+      <section className="dashboard-actions-grid">
+        <section className="panel dashboard-action-panel">
+          <div className="panel-heading"><div><h2>الجمعات القادمة</h2><p>الدعوات واللقاءات المرتبطة بك</p></div><CalendarDays size={18} /></div>
+          <div className="dashboard-action-list">
+            {pendingGatherings.map((gathering) => (
+              <article className="dashboard-action-row" key={`${gathering.workspaceId}-${gathering.id}`}>
+                <div className="dashboard-action-copy"><strong>{gathering.title}</strong><small>{groups.find((group) => group.id === gathering.workspaceId)?.title} · {new Intl.DateTimeFormat('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', numberingSystem: 'latn' }).format(gathering.eventAt)}</small></div>
+                <div className="dashboard-action-buttons"><button className="button-primary" onClick={() => onVote(gathering.workspaceId, gathering.id, 'joined')}><Check size={14} /> قبول</button><button className="button-outline" onClick={() => onVote(gathering.workspaceId, gathering.id, 'declined')}><X size={14} /> رفض</button></div>
+              </article>
+            ))}
+            {upcomingGatherings.map((gathering) => (
+              <article className="dashboard-action-row" key={`${gathering.workspaceId}-${gathering.id}`}>
+                <div className="dashboard-action-copy"><strong>{gathering.title}</strong><small>{groups.find((group) => group.id === gathering.workspaceId)?.title} · {new Intl.DateTimeFormat('ar-SA', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', numberingSystem: 'latn' }).format(gathering.eventAt)}</small></div>
+                <span className="pill green-pill">قادم</span>
+              </article>
+            ))}
+            {!pendingGatherings.length && !upcomingGatherings.length && <p className="dashboard-empty-message">لا توجد دعوات أو جمعات قادمة.</p>}
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section className="overview-shortcuts" aria-label="الوصول السريع">
-        <button className="overview-shortcut shortcut-fund" onClick={() => onNavigate('funds')}>
-          <span className="overview-shortcut-icon"><Wallet size={22} /></span>
-          <span><strong>الصندوق</strong><small>للمصاريف المستمرة والسلف</small></span>
-          <ArrowUpLeft size={17} />
-        </button>
-        <button className="overview-shortcut shortcut-gatherings" onClick={() => onNavigate('gatherings')}>
-          <span className="overview-shortcut-icon"><UsersRound size={22} /></span>
-          <span><strong>الجمعات</strong><small>للمناسبات والطلعات المؤقتة</small></span>
-          <ArrowUpLeft size={17} />
-        </button>
-        <button className="overview-shortcut shortcut-split" onClick={() => onNavigate('split')}>
-          <span className="overview-shortcut-icon"><ArrowLeftRight size={22} /></span>
-          <span><strong>القسمة السريعة</strong><small>لتوزيع فاتورة لحظية</small></span>
-          <ArrowUpLeft size={17} />
-        </button>
-      </section>
-
-      <section className="panel overview-activity">
-        <div className="panel-heading">
-          <div><h2>آخر العمليات</h2><p>أحدث العمليات المسجلة في المجموعة النشطة</p></div>
-          <button className="text-button" onClick={() => onNavigate('activity')}>عرض الكل <ArrowUpLeft size={15} /></button>
-        </div>
-        <div className="overview-table-wrap">
-          <table className="overview-activity-table">
-            <thead><tr><th>العملية</th><th>التفاصيل</th><th>المبلغ</th><th>الوقت</th></tr></thead>
-            <tbody>
-              {history.slice(0, 3).map((item) => <tr key={item.id}>
-                <td>{item.title}</td><td>{item.detail}</td><td>{item.amount}</td><td>{item.time}</td>
-              </tr>)}
-              {!history.length && <tr><td colSpan={4}>لا توجد عمليات مسجلة في المجموعة النشطة بعد.</td></tr>}
-            </tbody>
-          </table>
-        </div>
+        <section className="panel dashboard-action-panel">
+          <div className="panel-heading"><div><h2>مستحقات الصناديق</h2><p>تأكيد الدفع دون مغادرة الصفحة الرئيسية</p></div><ReceiptText size={18} /></div>
+          <div className="dashboard-action-list">
+            {pendingContributions.map(({ request, contribution }) => (
+              <article className="dashboard-action-row" key={`${request.workspaceId}-${request.id}-${contribution.uid}`}>
+                <div className="dashboard-action-copy"><strong>{request.title}</strong><small>{groups.find((group) => group.id === request.workspaceId)?.title} · {money(contribution.amount)} ر.س · {dueLabel(request.due, request.cadence)}</small>{contribution.status !== 'awaiting' && <DueBadge due={request.due} cadence={request.cadence} now={new Date(now)} />}</div>
+                <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(request.workspaceId, request.id, currentUserId)}><Check size={14} /> تأكيد الدفع</button>
+              </article>
+            ))}
+            {dueObligations.map((obligation) => (
+              <article className="dashboard-action-row" key={`${obligation.workspaceId}-${obligation.id}`}>
+                <div className="dashboard-action-copy"><strong>{obligation.title}</strong><small>{groups.find((group) => group.id === obligation.workspaceId)?.title} · {money(obligation.amount)} ر.س · {dueLabel(obligation.due, obligation.cadence)}</small><DueBadge due={obligation.due} cadence={obligation.cadence} now={new Date(now)} /></div>
+                <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onReportObligationPayment(obligation.workspaceId, obligation.id)}><Check size={14} /> تأكيد الدفع</button>
+              </article>
+            ))}
+            {!pendingContributions.length && !dueObligations.length && <p className="dashboard-empty-message">لا توجد مستحقات دفع حاليًا.</p>}
+          </div>
+        </section>
       </section>
     </>
   )
@@ -1703,12 +1801,14 @@ function EmptyState({ message }: { message: string }) {
 }
 
 type FundFormKind = 'kattah' | 'obligation' | 'reimbursement'
+type FundTab = 'contributions' | 'obligations' | 'reimbursements' | 'archive'
 
 function FundsView({
   onNavigate,
   onOpenWorkspace,
   onCreate,
   currentUserId,
+  selectedWorkspaceId,
   canManageGroup,
   funds: currentFunds,
   workspace,
@@ -1733,7 +1833,8 @@ function FundsView({
   onOpenWorkspace: (workspaceId: string) => void
   onCreate: () => void
   currentUserId: string
-  canManageGroup: boolean
+  selectedWorkspaceId: string
+  canManageGroup: (workspaceId: string) => boolean
   funds: Fund[]
   workspace?: Fund
   requests: KattahRequest[]
@@ -1741,17 +1842,17 @@ function FundsView({
   reimbursements: Reimbursement[]
   history: FundActivity[]
   firestoreStatus: 'local' | 'connecting' | 'connected' | 'error'
-  onConfirmContribution: (requestId: number, memberUid: string) => void
-  onApproveContribution: (requestId: number, memberUid: string) => void
-  onRejectContribution: (requestId: number, memberUid: string) => void
-  onApproveAllContributions: (requestId: number) => void
-  onReportObligationPayment: (obligationId: number) => void
-  onApproveObligationPayment: (obligationId: number) => void
+  onConfirmContribution: (workspaceId: string, requestId: number, memberUid: string) => void
+  onApproveContribution: (workspaceId: string, requestId: number, memberUid: string) => void
+  onRejectContribution: (workspaceId: string, requestId: number, memberUid: string) => void
+  onApproveAllContributions: (workspaceId: string, requestId: number) => void
+  onReportObligationPayment: (workspaceId: string, obligationId: number) => void
+  onApproveObligationPayment: (workspaceId: string, obligationId: number) => void
   onCreateReimbursement: (workspaceId: string, title: string, amount: number, receipt: string) => void
   onCreateKattahRequest: (workspaceId: string, title: string, total: number, cadence: string, due: string) => void
   onCreateObligation: (workspaceId: string, title: string, amount: number, cadence: string, due: string) => void
-  onDecideReimbursement: (reimbursementId: number, status: Reimbursement['status']) => void
-  onConfirmReimbursementReceipt: (reimbursementId: number, received: boolean) => void
+  onDecideReimbursement: (workspaceId: string, reimbursementId: number, status: Reimbursement['status']) => void
+  onConfirmReimbursementReceipt: (workspaceId: string, reimbursementId: number, received: boolean) => void
 }) {
   const [formKind, setFormKind] = useState<FundFormKind | null>(null)
   const [formTitle, setFormTitle] = useState('')
@@ -1759,13 +1860,24 @@ function FundsView({
   const [formCadence, setFormCadence] = useState('شهري')
   const [formDue, setFormDue] = useState('')
   const [receiptName, setReceiptName] = useState('')
+  const [activeFundTab, setActiveFundTab] = useState<FundTab>('contributions')
+  const [dueNow, setDueNow] = useState(() => Date.now())
 
-  const selectedFund = workspace ?? currentFunds[0]
+  useEffect(() => {
+    const timer = window.setInterval(() => setDueNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const selectedFund = workspace ?? currentFunds.find((fund) => fund.id === selectedWorkspaceId) ?? currentFunds[0]
   const workspaceId = selectedFund?.id ?? ''
-  const currentRequests = workspace ? requests.filter((request) => request.workspaceId === workspace.id) : requests
-  const currentObligations = workspace ? obligations.filter((obligation) => obligation.workspaceId === workspace.id) : obligations
-  const currentReimbursements = workspace ? reimbursements.filter((request) => request.workspaceId === workspace.id) : reimbursements
-  const currentHistory = workspace ? history.filter((item) => item.workspaceId === workspace.id) : history
+  const currentRequests = requests.filter((request) => request.workspaceId === workspaceId)
+  const currentObligations = obligations.filter((obligation) => obligation.workspaceId === workspaceId)
+  const currentReimbursements = reimbursements.filter((request) => request.workspaceId === workspaceId)
+  const currentHistory = history.filter((item) => item.workspaceId === workspaceId)
+  const switchToWorkspace = (nextWorkspaceId: string) => {
+    setActiveFundTab('contributions')
+    onOpenWorkspace(nextWorkspaceId)
+  }
   const currentRequest = currentRequests[0]
   const sortedContributions = currentRequest ? orderedContributions(currentRequest.contributions) : []
   const confirmedContributions = sortedContributions.filter((item) => item.status === 'awaiting' || item.status === 'paid')
@@ -1786,8 +1898,12 @@ function FundsView({
     const amount = Number(formAmount)
     if (!title || !Number.isFinite(amount) || amount <= 0 || !formKind) return
 
-    if (formKind === 'kattah') onCreateKattahRequest(workspaceId, title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
-    if (formKind === 'obligation') onCreateObligation(workspaceId, title, amount, formCadence, formDue.trim() || 'يُحدّد لاحقًا')
+    if (formKind === 'kattah' || formKind === 'obligation') {
+      const due = formCadence === 'شهري' ? `monthly:${Number(formDue)}` : formDue
+      if (!formDue.trim()) return
+      if (formKind === 'kattah') onCreateKattahRequest(workspaceId, title, amount, formCadence, due)
+      else onCreateObligation(workspaceId, title, amount, formCadence, due)
+    }
     if (formKind === 'reimbursement') onCreateReimbursement(workspaceId, title, amount, receiptName || 'لم يُرفق إيصال')
     setFormKind(null)
     setFormTitle('')
@@ -1808,7 +1924,7 @@ function FundsView({
 
       <section className="balance-banner">
         <div className="balance-main">
-          <div className="balance-title"><span className="balance-wallet"><Wallet size={19} /></span><span><small>الصندوق المحدد</small><strong>{selectedFund?.title ?? 'صندوق المجموعة'}</strong></span></div>
+          <div className="balance-title"><span className="balance-wallet"><Wallet size={19} /></span><span><small>الصندوق النشط</small><strong>{selectedFund?.title ?? 'صندوق المجموعة'}</strong></span></div>
           <span className="balance-caption">{workspace ? 'الرصيد الحالي للصندوق' : 'الرصيد التراكمي المسجّل'}</span>
           <strong className="balance-amount">{money(selectedFund?.balance ?? 0)} <small>ر.س</small></strong>
         </div>
@@ -1819,6 +1935,18 @@ function FundsView({
           <div className="balance-mini-stats"><span><Check size={14} /> {formatNumber(paidContributions.length)} دفعوا</span><span><Clock3 size={14} /> {formatNumber(awaitingContributions.length)} بانتظار الاعتماد</span><span><CalendarDays size={14} /> {money(totalDue)} ر.س التزامات قادمة</span></div>
         </div>
       </section>
+
+      {currentFunds.length > 1 && <section className="fund-quick-switch" aria-label="التنقل بين الصناديق">
+        <div className="fund-quick-switch-heading"><strong>مجموعاتك</strong><small>انتقل مباشرة إلى صندوق آخر</small></div>
+        <div className="fund-quick-switch-list">
+          {currentFunds.filter((fund) => fund.id !== workspaceId).map((fund) => (
+            <button key={fund.id} onClick={() => switchToWorkspace(fund.id)}>
+              <span><strong>{fund.title}</strong><small>{formatNumber(fund.members)} أعضاء</small></span>
+              <b>{money(fund.balance)} <small>ر.س</small></b>
+            </button>
+          ))}
+        </div>
+      </section>}
 
       {workspace && <section className="panel workspace-members-panel">
         <div className="panel-heading"><div><h2>أعضاء المجموعة</h2><p>{formatNumber(workspace.members)} أعضاء</p></div><UsersRound size={19} /></div>
@@ -1839,8 +1967,10 @@ function FundsView({
           <div className="fund-form-fields">
             <label><span>{formKind === 'kattah' ? 'عنوان القطية' : formKind === 'obligation' ? 'اسم الالتزام' : 'سبب المصروف'}</span><input required value={formTitle} onChange={(event) => setFormTitle(event.target.value)} placeholder={formKind === 'kattah' ? 'مثال: قطية شهر نوفمبر' : formKind === 'obligation' ? 'مثال: فاتورة المياه' : 'مثال: مستلزمات طارئة للاستراحة'} /></label>
             <label><span>المبلغ الإجمالي (ر.س)</span><input required type="number" min="0.01" step="0.01" value={formAmount} onChange={(event) => setFormAmount(event.target.value)} placeholder="0.00" /></label>
-            {formKind !== 'reimbursement' && <label><span>نوع الاستحقاق</span><select value={formCadence} onChange={(event) => setFormCadence(event.target.value)}><option>فوري</option><option>شهري</option><option>سنوي</option></select></label>}
-            {formKind !== 'reimbursement' && <label><span>تاريخ الاستحقاق</span><input value={formDue} onChange={(event) => setFormDue(event.target.value)} placeholder="مثال: 1 نوفمبر 2026" /></label>}
+            {formKind !== 'reimbursement' && <label><span>نوع الاستحقاق</span><select value={formCadence} onChange={(event) => { setFormCadence(event.target.value); setFormDue('') }}><option>فوري</option><option>شهري</option><option>سنوي</option></select></label>}
+            {formKind !== 'reimbursement' && <label><span>{formCadence === 'شهري' ? 'يوم الاستحقاق من كل شهر' : 'تاريخ الاستحقاق'}</span>{formCadence === 'شهري'
+              ? <input required type="number" min="1" max="31" step="1" inputMode="numeric" value={formDue} onChange={(event) => setFormDue(event.target.value)} placeholder="مثال: 27" />
+              : <input required type="date" value={formDue} onChange={(event) => setFormDue(event.target.value)} />}</label>}
             {formKind === 'reimbursement' && <label className="receipt-upload"><span>إيصال الشراء</span><span className="receipt-picker"><ReceiptText size={14} />{receiptName || 'اختر صورة أو ملف PDF لإرفاقه'}<input type="file" accept="image/*,.pdf" onChange={(event) => setReceiptName(event.target.files?.[0]?.name ?? '')} /></span></label>}
           </div>
           {formKind === 'reimbursement' && <p className="fund-form-note"><ShieldCheck size={14} /> الإيصال يبقى ضمن هذا النموذج التجريبي ولا يُرفع إلى خادم.</p>}
@@ -1848,18 +1978,27 @@ function FundsView({
         </form>
       )}
 
-      <section className="panel kattah-panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{canManageGroup && awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({formatNumber(awaitingContributions.length)})</button>}</div></div>
+      <div className="fund-tabs" role="tablist" aria-label="أقسام الصندوق">
+        {([
+          ['contributions', 'القطات والاشتراكات'],
+          ['obligations', 'الالتزامات والمصروفات'],
+          ['reimbursements', 'طلبات التعويض'],
+          ['archive', 'أرشيف الصناديق'],
+        ] as const).map(([id, label]) => <button key={id} id={`fund-tab-${id}`} role="tab" aria-selected={activeFundTab === id} className={activeFundTab === id ? 'selected' : ''} onClick={() => setActiveFundTab(id)}>{label}</button>)}
+      </div>
+
+      {activeFundTab === 'contributions' && <section id="fund-panel-contributions" role="tabpanel" aria-labelledby="fund-tab-contributions" className="panel kattah-panel fund-section-panel">
+        <div className="panel-heading"><div><span className="section-kicker">الاشتراكات والمساهمات</span><h2>القطية والاشتراك الشهري</h2><p>آلية موحّدة: يؤكد العضو الدفع، ثم يعتمد المسؤول وصول الحوالة لإضافة المبلغ للرصيد.</p></div><div className="kattah-header-actions"><span className="pill green-pill">{currentRequest?.cadence ?? 'شهري'}</span>{canManageGroup(workspaceId) && awaitingContributions.length > 0 && <button className="button-primary batch-approve" disabled={!paymentActionsEnabled} onClick={() => currentRequest && onApproveAllContributions(workspaceId, currentRequest.id)}><Check size={14} /> اعتماد المنتظرين ({formatNumber(awaitingContributions.length)})</button>}</div></div>
         {currentRequest ? (
           <>
             <div className="contribution-primary-action">
               {canConfirmPayment
-                ? <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(currentRequest.id, currentUserId)}><Check size={16} /> تأكيد الدفع</button>
+                ? <button className="button-primary" disabled={!paymentActionsEnabled} onClick={() => onConfirmContribution(workspaceId, currentRequest.id, currentUserId)}><Check size={16} /> تأكيد الدفع</button>
                 : currentMemberPayment && <PaymentBadge status={currentMemberPayment.status} />}
               {canConfirmPayment && <small>تأكيدك سيظهر في أعلى القائمة، ولا يضاف المبلغ للرصيد قبل الاعتماد.</small>}
             </div>
             <div className="request-summary">
-              <span><strong>{currentRequest.title}</strong><small>الاستحقاق {currentRequest.due}</small></span>
+              <span><strong>{currentRequest.title}</strong><small>الاستحقاق {dueLabel(currentRequest.due, currentRequest.cadence)}</small>{canConfirmPayment && <DueBadge due={currentRequest.due} cadence={currentRequest.cadence} now={new Date(dueNow)} />}</span>
               <span><strong>{money(currentRequest.total)} ر.س</strong><small>الحصة المتوقعة لكل عضو</small></span>
               <span><strong>{formatNumber(paidContributions.length)} من {formatNumber(currentRequest.contributions.length)}</strong><small>تأكيدات معتمدة</small></span>
             </div>
@@ -1871,25 +2010,26 @@ function FundsView({
                   <PaymentBadge status={contribution.status} />
                   {contribution.status === 'unpaid' && <span className="member-waiting">بانتظار العضو</span>}
                   {contribution.status === 'rejected' && contribution.uid !== currentUserId && <span className="member-waiting">لم تُستلم الحوالة</span>}
-                  {contribution.status === 'awaiting' && canManageGroup && <span className="review-actions"><button className="button-outline row-action approve-action" disabled={!paymentActionsEnabled} onClick={() => onApproveContribution(currentRequest.id, contribution.uid)}><Check size={13} /> تم الاستلام</button><button className="reject-action" disabled={!paymentActionsEnabled} onClick={() => onRejectContribution(currentRequest.id, contribution.uid)}>لم تصل الحوالة</button></span>}
+                  {contribution.status === 'awaiting' && canManageGroup(workspaceId) && <span className="review-actions"><button className="button-outline row-action approve-action" disabled={!paymentActionsEnabled} onClick={() => onApproveContribution(workspaceId, currentRequest.id, contribution.uid)}><Check size={13} /> تم الاستلام</button><button className="reject-action" disabled={!paymentActionsEnabled} onClick={() => onRejectContribution(workspaceId, currentRequest.id, contribution.uid)}>لم تصل الحوالة</button></span>}
                   {contribution.status === 'paid' && <span className="verified-mark"><CircleCheck size={15} /></span>}
                 </div>
               ))}
             </div>
           </>
         ) : <EmptyState message="لا توجد طلبات قطية نشطة." />}
-      </section>
+      </section>}
 
+      {activeFundTab === 'obligations' && <div id="fund-panel-obligations" role="tabpanel" aria-labelledby="fund-tab-obligations">
       <section className="panel fund-section-panel">
         <div className="panel-heading"><div><span className="section-kicker">مصروفات دورية أو طارئة</span><h2>الالتزامات المستقرة</h2><p>سجّلوا الاستحقاق وتابعوا إشعار السداد واعتماد المشرف.</p></div><button className="text-button" onClick={() => { setFormKind('obligation'); setFormTitle(''); setFormAmount(''); setFormDue('') }}><Plus size={15} /> إضافة التزام</button></div>
         <div className="obligation-list">
           {currentObligations.map((obligation) => (
             <div className="obligation-row" key={obligation.id}>
               <span className={`obligation-icon ${obligation.status === 'due' ? 'due' : ''}`}><ReceiptText size={17} /></span>
-              <span className="obligation-name"><strong>{obligation.title}</strong><small>{obligation.cadence} · الاستحقاق {obligation.due}</small></span>
+              <span className="obligation-name"><strong>{obligation.title}</strong><small>{obligation.cadence} · الاستحقاق {dueLabel(obligation.due, obligation.cadence)}</small>{!['paid', 'awaiting'].includes(obligation.status) && <DueBadge due={obligation.due} cadence={obligation.cadence} now={new Date(dueNow)} />}</span>
               <strong className="obligation-amount">{money(obligation.amount)} <small>ر.س</small></strong>
               <ObligationBadge status={obligation.status} />
-              {obligation.status === 'paid' ? <span className="verified-mark"><CircleCheck size={15} /></span> : obligation.status === 'awaiting' ? <button className="button-outline row-action approve-action" onClick={() => onApproveObligationPayment(obligation.id)}><Check size={13} /> اعتماد السداد</button> : <button className="button-outline row-action" onClick={() => onReportObligationPayment(obligation.id)}>تسجيل السداد</button>}
+              {obligation.status === 'paid' ? <span className="verified-mark"><CircleCheck size={15} /></span> : obligation.status === 'awaiting' ? <button className="button-outline row-action approve-action" onClick={() => onApproveObligationPayment(workspaceId, obligation.id)}><Check size={13} /> اعتماد السداد</button> : <button className="button-outline row-action" onClick={() => onReportObligationPayment(workspaceId, obligation.id)}>تسجيل السداد</button>}
             </div>
           ))}
           {currentObligations.length === 0 && <EmptyState message="لا توجد التزامات مسجلة." />}
@@ -1897,6 +2037,12 @@ function FundsView({
       </section>
 
       <section className="panel fund-section-panel">
+        <div className="panel-heading"><div><span className="section-kicker">سجل المجموعة</span><h2>المصروفات والسجلات</h2><p>العمليات المسجلة لهذه المجموعة فقط.</p></div>{!workspace && <button className="text-button" onClick={() => onNavigate('activity')}>السجل الكامل <ArrowUpLeft size={15} /></button>}</div>
+        <FundHistoryRows history={currentHistory} />
+      </section>
+      </div>}
+
+      {activeFundTab === 'reimbursements' && <section id="fund-panel-reimbursements" role="tabpanel" aria-labelledby="fund-tab-reimbursements" className="panel fund-section-panel">
         <div className="panel-heading"><div><span className="section-kicker">مصروفات دفعها عضو نيابة عن المجموعة</span><h2>طلبات التعويض والاسترداد</h2><p>راجعوا الإيصال، وسجّلوا الصرف، ثم انتظروا تأكيد المستفيد.</p></div><button className="text-button" onClick={() => { setFormKind('reimbursement'); setFormTitle(''); setFormAmount(''); setReceiptName('') }}><Plus size={15} /> طلب تعويض</button></div>
         {currentReimbursements.length ? <div className="reimbursement-list">
           {currentReimbursements.map((request) => (
@@ -1905,23 +2051,18 @@ function FundsView({
               <span className="reimbursement-name"><strong>{request.title}</strong><small>طلبه {request.member} · الإيصال: {request.receipt}</small></span>
               <strong className="obligation-amount">{money(request.amount)} <small>ر.س</small></strong>
               <ReimbursementBadge status={request.status} />
-              {request.status === 'review' && <span className="review-actions"><button className="button-outline row-action approve-action" onClick={() => onDecideReimbursement(request.id, 'awaiting-receipt')}><Check size={13} /> اعتماد وتسجيل الصرف</button><button className="reject-action" onClick={() => onDecideReimbursement(request.id, 'rejected')}>رفض</button></span>}
-              {request.status === 'awaiting-receipt' && <span className="review-actions"><button className="button-outline row-action approve-action" onClick={() => onConfirmReimbursementReceipt(request.id, true)}>تأكيد الاستلام</button><button className="reject-action" onClick={() => onConfirmReimbursementReceipt(request.id, false)}>لم يصلني</button></span>}
+              {request.status === 'review' && <span className="review-actions"><button className="button-outline row-action approve-action" onClick={() => onDecideReimbursement(workspaceId, request.id, 'awaiting-receipt')}><Check size={13} /> اعتماد وتسجيل الصرف</button><button className="reject-action" onClick={() => onDecideReimbursement(workspaceId, request.id, 'rejected')}>رفض</button></span>}
+              {request.status === 'awaiting-receipt' && <span className="review-actions"><button className="button-outline row-action approve-action" onClick={() => onConfirmReimbursementReceipt(workspaceId, request.id, true)}>تأكيد الاستلام</button><button className="reject-action" onClick={() => onConfirmReimbursementReceipt(workspaceId, request.id, false)}>لم يصلني</button></span>}
             </div>
           ))}
         </div> : <EmptyState message="لا توجد طلبات تعويض." />}
-      </section>
+      </section>}
 
-      <section className="panel fund-section-panel">
-        <div className="panel-heading"><div><span className="section-kicker">سجل المجموعة</span><h2>المصروفات والسجلات</h2><p>العمليات المسجلة لهذه المجموعة فقط.</p></div>{!workspace && <button className="text-button" onClick={() => onNavigate('activity')}>السجل الكامل <ArrowUpLeft size={15} /></button>}</div>
-        <FundHistoryRows history={currentHistory} />
-      </section>
-
-      {!workspace && <section className="section-block">
-        <div className="panel-heading section-heading"><div><h2>كل الصناديق</h2><p>مساحات المصروفات المشتركة في حسابك</p></div><div className="filter-pills"><button className="selected">الكل <span>{formatNumber(currentFunds.length)}</span></button><button>نشطة</button></div></div>
-        <div className="fund-cards fund-cards-large">{currentFunds.map((fund) => <FundCard key={fund.id} fund={fund} onClick={() => onOpenWorkspace(fund.id)} />)}</div>
-      </section>
-      }
+      {activeFundTab === 'archive' && <section id="fund-panel-archive" role="tabpanel" aria-labelledby="fund-tab-archive" className="section-block fund-archive-section">
+        <div className="panel-heading section-heading"><div><h2>أرشيف الصناديق</h2><p>اختر أي صندوق للانتقال إليه مباشرة</p></div><span className="pill green-pill">{formatNumber(currentFunds.length)} صناديق</span></div>
+        <div className="fund-cards fund-cards-large">{currentFunds.map((fund) => <div className={`fund-archive-card ${fund.id === workspaceId ? 'active' : ''}`} key={fund.id}><FundCard fund={fund} onClick={() => switchToWorkspace(fund.id)} /></div>)}</div>
+        {!currentFunds.length && <EmptyState message="لا توجد صناديق في الأرشيف." />}
+      </section>}
     </>
   )
 }
