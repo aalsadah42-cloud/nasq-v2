@@ -62,6 +62,7 @@ import './App.css'
 type View = 'overview' | 'funds' | 'workspace' | 'gatherings' | 'split' | 'activity'
 type CreateKind = 'fund' | 'gathering'
 type Fund = { id: string; title: string; members: number; memberNames: string[]; balance: number; role: UserGroup['role']; icon: string; color: string; due: string }
+type WorkspaceGroup = Fund & { hasFund: boolean }
 type GatheringDecision = 'joined' | 'declined' | 'pending'
 type GatheringParticipant = { uid?: string; name: string; decision: GatheringDecision; late?: boolean; settlementStatus?: 'pending' | 'paid'; paymentMethod?: PaymentMethod; paymentDetails?: string }
 type GatheringExpense = { id: number; description: string; payer: string; amount: number }
@@ -453,6 +454,7 @@ function App() {
   const [shares, setShares] = useState(['60', '60', '60', '60'])
   const [splitSaved, setSplitSaved] = useState(false)
   const [createKind, setCreateKind] = useState<CreateKind | null>(null)
+  const [newGroupType, setNewGroupType] = useState<'event' | 'ongoing'>('ongoing')
   const gatheringItems = useGatheringStore((state) => state.gatherings)
   const setGatheringItems = useGatheringStore((state) => state.updateGatherings)
   const replaceCloudGatherings = useGatheringStore((state) => state.replaceCloudGatherings)
@@ -488,17 +490,19 @@ function App() {
   const [obligations, setObligations] = useState<Obligation[]>([])
   const [reimbursements, setReimbursements] = useState<Reimbursement[]>([])
   const [fundHistory, setFundHistory] = useState<FundActivity[]>([])
-  const allFunds: Fund[] = userGroups.map((group, index) => ({
+  const allGroups: WorkspaceGroup[] = userGroups.map((group, index) => ({
     id: group.id,
     title: group.name,
     members: group.memberNames.length,
     memberNames: group.memberNames,
     balance: fundBalances[group.id] ?? group.balance,
+    hasFund: group.hasFund,
     role: group.role,
     icon: '👥',
     color: ['mint', 'lavender', 'peach'][index % 3],
     due: 'لا توجد التزامات قادمة',
   }))
+  const allFunds = allGroups.filter((group) => group.hasFund)
   const allGatherings = gatheringItems
 
   const total = Number(amount) || 0
@@ -555,7 +559,11 @@ function App() {
       const route = useNavigationStore.getState()
       const selectedGroupExists = groups.some((group) => group.id === route.selectedWorkspaceId)
       const selectedGroupId = selectedGroupExists ? route.selectedWorkspaceId : groups[0]?.id ?? null
-      if (selectedGroupId !== route.selectedWorkspaceId) {
+      const selectedGroup = groups.find((group) => group.id === selectedGroupId)
+      if (route.activeView === 'workspace' && selectedGroup?.hasFund === false) {
+        setRoute({ activeView: 'gatherings', selectedWorkspaceId: selectedGroupId })
+        navigate('/gatherings')
+      } else if (selectedGroupId !== route.selectedWorkspaceId) {
         setRoute({ activeView: route.activeView, selectedWorkspaceId: selectedGroupId })
         if (route.activeView === 'workspace' && selectedGroupId) {
           navigate(`/workspaces/${encodeURIComponent(selectedGroupId)}`)
@@ -594,6 +602,7 @@ function App() {
     setGatheringSyncError('')
     setFirestoreError('')
     const groupIds = userGroups.map((group) => group.id)
+    const fundGroupIds = userGroups.filter((group) => group.hasFund).map((group) => group.id)
     if (!hasFirebaseConfig || !currentUser || groupIds.length === 0) {
       setFirestoreStatus('local')
       return
@@ -616,7 +625,10 @@ function App() {
     }
     setFirestoreStatus('connecting')
     const markConnected = () => {
-      const allReady = Object.values(ready).every((receivedGroups) => groupIds.every((groupId) => receivedGroups.has(groupId)))
+      const allGatheringsReady = groupIds.every((groupId) => ready.gatherings.has(groupId))
+      const allFundsReady = ['requests', 'balances', 'obligations', 'reimbursements']
+        .every((key) => fundGroupIds.every((groupId) => ready[key as keyof typeof ready].has(groupId)))
+      const allReady = allGatheringsReady && allFundsReady
       if (!hasSyncError && allReady) {
         setFirestoreStatus('connected')
         setFirestoreError('')
@@ -630,23 +642,8 @@ function App() {
     }
     void import('./fundPaymentSync').then((paymentSync) => {
       if (cancelled) return
-      for (const groupId of groupIds) {
-        unsubscribers.push(paymentSync.subscribeToFundPayments(
-          groupId,
-          (requests) => {
-            requestsByGroup.set(groupId, requests)
-            replaceCloudRequests([...requestsByGroup.values()].flat())
-            ready.requests.add(groupId)
-            markConnected()
-          },
-          (balances) => {
-            balancesByGroup.set(groupId, balances)
-            replaceCloudBalances(Object.assign({}, ...balancesByGroup.values()))
-            ready.balances.add(groupId)
-            markConnected()
-          },
-          (error) => handleSyncError('fund-payment', error),
-        ))
+      for (const group of userGroups) {
+        const groupId = group.id
         unsubscribers.push(paymentSync.subscribeToGatherings(
           groupId,
           (id, value) => decodeGathering(id, value, groupId),
@@ -662,22 +659,40 @@ function App() {
             setGatheringSyncError(error.message)
           },
         ))
-        unsubscribers.push(subscribeToFundOperations(
-          groupId,
-          (items) => {
-            obligationsByGroup.set(groupId, items)
-            setObligations([...obligationsByGroup.values()].flat())
-            ready.obligations.add(groupId)
-            markConnected()
-          },
-          (items) => {
-            reimbursementsByGroup.set(groupId, items)
-            setReimbursements([...reimbursementsByGroup.values()].flat())
-            ready.reimbursements.add(groupId)
-            markConnected()
-          },
-          (error) => handleSyncError('fund-operation', error),
-        ))
+        if (group.hasFund) {
+          unsubscribers.push(paymentSync.subscribeToFundPayments(
+            groupId,
+            (requests) => {
+              requestsByGroup.set(groupId, requests)
+              replaceCloudRequests([...requestsByGroup.values()].flat())
+              ready.requests.add(groupId)
+              markConnected()
+            },
+            (balances) => {
+              balancesByGroup.set(groupId, balances)
+              replaceCloudBalances(Object.assign({}, ...balancesByGroup.values()))
+              ready.balances.add(groupId)
+              markConnected()
+            },
+            (error) => handleSyncError('fund-payment', error),
+          ))
+          unsubscribers.push(subscribeToFundOperations(
+            groupId,
+            (items) => {
+              obligationsByGroup.set(groupId, items)
+              setObligations([...obligationsByGroup.values()].flat())
+              ready.obligations.add(groupId)
+              markConnected()
+            },
+            (items) => {
+              reimbursementsByGroup.set(groupId, items)
+              setReimbursements([...reimbursementsByGroup.values()].flat())
+              ready.reimbursements.add(groupId)
+              markConnected()
+            },
+            (error) => handleSyncError('fund-operation', error),
+          ))
+        }
       }
     }).catch((error: unknown) => {
       console.error('Firestore fund-payment sync initialization failed:', error)
@@ -715,6 +730,13 @@ function App() {
   }
 
   const openWorkspace = (workspaceId: string) => {
+    if (userGroups.find((group) => group.id === workspaceId)?.hasFund === false) {
+      navigate('/gatherings')
+      setRoute({ activeView: 'gatherings', selectedWorkspaceId: workspaceId })
+      setMenuOpen(false)
+      setSidebarOpen(false)
+      return
+    }
     navigate(`/workspaces/${encodeURIComponent(workspaceId)}`)
     setRoute({ activeView: 'workspace', selectedWorkspaceId: workspaceId })
     setMenuOpen(false)
@@ -722,9 +744,22 @@ function App() {
     setSplitSaved(false)
   }
 
+  const openGroupHome = (group: Pick<UserGroup, 'id' | 'hasFund'>) => {
+    if (group.hasFund) {
+      openWorkspace(group.id)
+      return
+    }
+    navigate('/gatherings')
+    setRoute({ activeView: 'gatherings', selectedWorkspaceId: group.id })
+    setMenuOpen(false)
+    setSidebarOpen(false)
+    setSplitSaved(false)
+  }
+
   const openGroupSection = (workspaceId: string, view: Exclude<View, 'overview' | 'workspace'>) => {
     if (view === 'funds') {
-      openWorkspace(workspaceId)
+      const group = userGroups.find((item) => item.id === workspaceId)
+      if (group) openGroupHome(group)
       return
     }
     navigate(`/${view}`)
@@ -770,7 +805,7 @@ function App() {
       setGroupModalOpen(false)
       setJoinCode('')
       setCreatedInviteCode('')
-      openWorkspace(joinedGroup.id)
+      openGroupHome(joinedGroup)
       setCreatedMessage(`انضممت إلى مجموعة «${joinedGroup.name}».`)
     } catch (error) {
       console.error('Joining a Firebase group failed:', error)
@@ -793,6 +828,7 @@ function App() {
       setShowAuthModal(true)
       return
     }
+    if (kind === 'fund') setNewGroupType('ongoing')
     if (kind === 'gathering' && !selectedWorkspaceId) {
       setCreatedMessage('أنشئ مجموعة أو انضم إلى واحدة قبل إضافة جمعة.')
       return
@@ -856,10 +892,10 @@ function App() {
         return
       }
       try {
-        const newGroup = await createGroup(name, currentUser)
+        const newGroup = await createGroup(name, currentUser, undefined, { hasFund: newGroupType === 'ongoing' })
         setUserGroups((groups) => [...groups, newGroup])
         setCreateKind(null)
-        openWorkspace(newGroup.id)
+        openGroupHome(newGroup)
         setGroupActionError('')
         setCreatedInviteCode(newGroup.inviteCode)
         setGroupModalOpen(true)
@@ -1347,7 +1383,7 @@ function App() {
 
         <span className="nav-heading">القائمة الرئيسية</span>
         <nav className="side-nav" aria-label="التنقل الرئيسي">
-          {navigation.map(({ id, label, icon: Icon }) => (
+          {navigation.filter(({ id }) => id !== 'funds' || selectedGroup?.hasFund !== false).map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-link ${activeView === id ? 'active' : ''}`} onClick={() => openView(id)}>
               <Icon size={19} strokeWidth={1.8} />
               <span>{label}</span>
@@ -1405,7 +1441,7 @@ function App() {
             }}
             currentUserName={currentUserName}
             groupsLoading={groupsLoading}
-            groups={allFunds}
+            groups={allGroups}
             gatherings={allGatherings}
             requests={kattahRequests}
             obligations={obligations}
@@ -1417,8 +1453,12 @@ function App() {
             onConfirmContribution={confirmContribution}
             onReportObligationPayment={reportObligationPayment}
           />}
-          {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && !selectedWorkspace
-            ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
+          {(activeView === 'funds' || activeView === 'workspace') && (activeView === 'workspace' && selectedGroup?.hasFund === false
+            ? <div className="panel workspace-not-found"><h1>هذه مجموعة مناسبات</h1><p>لا تحتوي المجموعة على صندوق مالي.</p><button className="button-primary" onClick={() => openGroupHome(selectedGroup)}>عرض الجمعات</button></div>
+            : activeView === 'workspace' && !selectedWorkspace
+              ? <div className="panel workspace-not-found"><h1>الصندوق غير موجود</h1><p>تعذر العثور على هذه المجموعة.</p><button className="button-primary" onClick={() => openView('funds')}>عرض جميع الصناديق</button></div>
+              : activeView === 'funds' && allFunds.length === 0
+                ? <div className="panel workspace-not-found"><h1>لا توجد صناديق مالية</h1><p>يمكنك إنشاء مجموعة مستمرة أو تفعيل صندوق من إعدادات إحدى مجموعات المناسبات.</p><button className="button-primary" onClick={() => startCreate('fund')}><Plus size={15} /> إنشاء مجموعة مستمرة</button></div>
             : <FundsView
             onNavigate={openView}
             onOpenWorkspace={openWorkspace}
@@ -1503,8 +1543,13 @@ function App() {
             <span className="modal-icon">{createKind === 'fund' ? <Wallet size={21} /> : <UsersRound size={21} />}</span>
             <span className="date-line">{createKind === 'fund' ? 'مساحة مشتركة للأعضاء' : gatheringsLanguage === 'ar' ? 'خططوا لها سوا' : 'Plan it together'}</span>
             <h2>{createKind === 'fund' ? 'أنشئ مجموعة جديدة' : gatheringsLanguage === 'ar' ? 'رتّبوا جمعتكم الجاية' : 'Create a gathering'}</h2>
-            <p>{createKind === 'fund' ? 'ستُحفظ المجموعة وعضويتها في Firestore ويمكن دعوة الأعضاء برمز.' : gatheringsLanguage === 'ar' ? 'اختر موعدًا سريعًا وحدد آخر وقت لقبول الدعوة.' : 'Choose a quick date and set the RSVP deadline.'}</p>
+            <p>{createKind === 'fund' ? 'اختر نوع المجموعة الآن؛ ويمكن تفعيل الصندوق لاحقًا لمجموعات المناسبات.' : gatheringsLanguage === 'ar' ? 'اختر موعدًا سريعًا وحدد آخر وقت لقبول الدعوة.' : 'Choose a quick date and set the RSVP deadline.'}</p>
             <label className="modal-field"><span>{createKind === 'fund' ? 'اسم المجموعة' : gatheringsLanguage === 'ar' ? 'عنوان الجمعة' : 'Gathering title'}</span><input autoFocus required value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={createKind === 'fund' ? 'مثال: مجموعة الأصدقاء' : gatheringsLanguage === 'ar' ? 'مثال: عشاء فريق العمل' : 'e.g. Team dinner'} /></label>
+            {createKind === 'fund' && <fieldset className="group-type-options">
+              <legend>نوع المجموعة</legend>
+              <label className={newGroupType === 'event' ? 'selected' : ''}><input type="radio" name="group-type" value="event" checked={newGroupType === 'event'} onChange={() => setNewGroupType('event')} /><span><strong>مجموعة مناسبات</strong><small>جمعات فقط، دون صندوق مالي</small></span></label>
+              <label className={newGroupType === 'ongoing' ? 'selected' : ''}><input type="radio" name="group-type" value="ongoing" checked={newGroupType === 'ongoing'} onChange={() => setNewGroupType('ongoing')} /><span><strong>مجموعة مستمرة</strong><small>صندوق مالي وجمعات</small></span></label>
+            </fieldset>}
             {createKind !== 'fund' && (
               <>
                 <label className="modal-field"><span>{gatheringsLanguage === 'ar' ? 'الموقع' : 'Location'}</span><input value={gatheringLocation} onChange={(event) => setGatheringLocation(event.target.value)} placeholder={gatheringsLanguage === 'ar' ? 'مثال: استراحة الشباب' : 'e.g. The cabin'} /></label>
@@ -1629,7 +1674,7 @@ function Overview({ onStartGroup, currentUserName, groupsLoading, groups, gather
   onStartGroup: () => void
   currentUserName: string
   groupsLoading: boolean
-  groups: Fund[]
+  groups: WorkspaceGroup[]
   gatherings: Gathering[]
   requests: KattahRequest[]
   obligations: Obligation[]
@@ -1678,13 +1723,13 @@ function Overview({ onStartGroup, currentUserName, groupsLoading, groups, gather
         <div className="dashboard-group-grid">
           {groups.map((group) => (
             <article className="dashboard-group-card" key={group.id}>
-              <button className="dashboard-group-main" onClick={() => onOpenGroupSection(group.id, 'funds')}>
+              <button className="dashboard-group-main" onClick={() => onOpenGroupSection(group.id, group.hasFund ? 'funds' : 'gatherings')}>
                 <span className="overview-shortcut-icon shortcut-fund-icon"><UsersRound size={21} /></span>
-                <span className="dashboard-group-copy"><strong>{group.title}</strong><small>{formatNumber(group.members)} أعضاء</small></span>
-                <span className="dashboard-group-balance">{money(group.balance)} <small>ر.س</small></span>
+                <span className="dashboard-group-copy"><strong>{group.title}</strong><small>{group.hasFund ? `${formatNumber(group.members)} أعضاء` : `مجموعة مناسبات · ${formatNumber(group.members)} أعضاء`}</small></span>
+                {group.hasFund && <span className="dashboard-group-balance">{money(group.balance)} <small>ر.س</small></span>}
               </button>
               <div className="dashboard-group-links">
-                <button onClick={() => onOpenGroupSection(group.id, 'funds')}><Wallet size={15} /> الصناديق</button>
+                {group.hasFund && <button onClick={() => onOpenGroupSection(group.id, 'funds')}><Wallet size={15} /> الصناديق</button>}
                 <button onClick={() => onOpenGroupSection(group.id, 'gatherings')}><UsersRound size={15} /> الجمعات</button>
                 <button onClick={() => onOpenGroupSection(group.id, 'split')}><ArrowLeftRight size={15} /> القسمة السريعة</button>
                 {group.role !== 'member' && <button onClick={() => onManageGroup(group.id)}><Settings2 size={15} /> الإعدادات</button>}

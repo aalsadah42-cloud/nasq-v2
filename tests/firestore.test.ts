@@ -23,7 +23,7 @@ import {
   createSyncedRequest,
   type SyncedKattahRequest,
 } from '../src/fundPaymentSync'
-import { createGroup, joinGroup, leaveGroup, removeGroupMember } from '../src/lib/groups'
+import { createGroup, enableGroupFund, joinGroup, leaveGroup, removeGroupMember } from '../src/lib/groups'
 import {
   approveSyncedObligationPayment,
   decideSyncedReimbursement,
@@ -226,7 +226,28 @@ test('new groups initialize membership tracking at one member', async () => {
 
   const groupSnapshot = await getDoc(doc(creatorDb, groupPath(group.id)))
   assert.deepEqual(groupSnapshot.data()?.memberUids, ['new-owner'])
+  assert.equal(groupSnapshot.data()?.hasFund, true)
+  assert.equal((await getDoc(doc(creatorDb, `groups/${group.id}/fund/${group.id}`))).data()?.balance, 0)
   assert.equal((await getDoc(doc(creatorDb, `inviteCodes/${group.inviteCode}`))).data()?.memberCount, 1)
+})
+
+test('event groups do not create a fund until a manager enables it', async () => {
+  const creatorDb = environment.authenticatedContext('event-owner').firestore()
+  const group = await createGroup('Event group', {
+    uid: 'event-owner',
+    displayName: 'Event Owner',
+    email: null,
+  }, creatorDb, { hasFund: false })
+  const groupRef = doc(creatorDb, groupPath(group.id))
+  const fundRef = doc(creatorDb, `groups/${group.id}/fund/${group.id}`)
+
+  assert.equal(group.hasFund, false)
+  assert.equal((await getDoc(groupRef)).data()?.hasFund, false)
+  assert.equal((await getDoc(fundRef)).exists(), false)
+
+  await assertSucceeds(enableGroupFund(group.id, creatorDb))
+  assert.equal((await getDoc(groupRef)).data()?.hasFund, true)
+  assert.equal((await getDoc(fundRef)).data()?.balance, 0)
 })
 
 test('invite rules reject joining a group at the 30-member cap', async () => {

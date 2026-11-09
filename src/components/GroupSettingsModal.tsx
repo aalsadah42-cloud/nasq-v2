@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, Copy, Crown, Link, Shield, Trash2, UserRoundMinus, UsersRound, X } from 'lucide-react'
+import { Check, Copy, Crown, Link, Shield, Trash2, UserRoundMinus, UsersRound, Wallet, X } from 'lucide-react'
 import type { GroupRole, UserGroup } from '../lib/groups'
 import {
   deleteGroup,
+  enableGroupFund,
   getGroupInviteCode,
   leaveGroup,
   removeGroupMember,
@@ -118,6 +119,12 @@ export function GroupSettingsModal({ group, currentUserId, onClose, onChanged }:
           <label className="modal-field"><span>الوصف</span><textarea maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} disabled={!isManager || busy} rows={3} /></label>
           {isManager && <button className="button-primary" type="submit" disabled={busy || (name.trim() === group.name && description.trim() === group.description)}><Check size={15} /> حفظ التفاصيل</button>}
         </form>
+
+        {!group.hasFund && isManager && <div className="settings-section">
+          <h3>الصندوق</h3>
+          <p>فعّل صندوقًا ماليًا لهذه المجموعة مع الإبقاء على جمعاتها وأعضائها.</p>
+          <button type="button" className="button-primary" disabled={busy} onClick={() => void runAction(() => enableGroupFund(group.id))}><Wallet size={15} /> تفعيل الصندوق لهذه المجموعة</button>
+        </div>}
 
         <div className="settings-section">
           <h3>رمز الدعوة</h3>

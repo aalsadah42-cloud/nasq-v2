@@ -199,7 +199,8 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 80
         && request.resource.data.memberUids is list
         && request.resource.data.memberUids.size() == 1
-        && request.resource.data.memberUids.hasAll([request.auth.uid]);
+        && request.resource.data.memberUids.hasAll([request.auth.uid])
+        && request.resource.data.get('hasFund', true) is bool;
       allow update: if (
         isManager(groupId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'createdBy'])
@@ -221,6 +222,11 @@ service cloud.firestore {
       ) || (
         signedIn()
         && validMemberListRemoval(groupId)
+      ) || (
+        isManager(groupId)
+        && resource.data.get('hasFund', true) == false
+        && request.resource.data.hasFund == true
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hasFund'])
       );
       allow delete: if isManager(groupId)
         && get(memberPath(groupId, request.auth.uid)).data.role == 'owner';
@@ -341,7 +347,15 @@ service cloud.firestore {
 
       match /fund/{fundId} {
         allow read: if isMember(groupId);
-        allow create, update, delete: if isManager(groupId);
+        allow create: if isManager(groupId) || (
+          signedIn()
+          && request.resource.data.groupId == groupId
+          && request.resource.data.balance == 0
+          && getAfter(groupPath(groupId)).data.createdBy == request.auth.uid
+          && getAfter(groupPath(groupId)).data.hasFund == true
+          && getAfter(memberPath(groupId, request.auth.uid)).data.role == 'owner'
+        );
+        allow update, delete: if isManager(groupId);
       }
 
       match /obligations/{obligationId} {

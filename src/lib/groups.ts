@@ -36,12 +36,14 @@ export type UserGroup = {
   createdBy: string
   createdAt: number | null
   balance: number
+  hasFund: boolean
   role: GroupRole
   members: GroupMember[]
   memberNames: string[]
 }
 
 export type CreatedGroup = UserGroup & { inviteCode: string }
+export type CreateGroupOptions = { hasFund?: boolean }
 
 const assertDb = () => {
   if (!db) throw new Error('إعداد Firebase غير متاح.')
@@ -64,7 +66,7 @@ const roleFrom = (value: unknown): GroupRole => {
   throw new Error('دور العضو في المجموعة غير صالح.')
 }
 
-export async function createGroup(name: string, user: GroupUser, firestore: Firestore = assertDb()): Promise<CreatedGroup> {
+export async function createGroup(name: string, user: GroupUser, firestore: Firestore = assertDb(), options: CreateGroupOptions = {}): Promise<CreatedGroup> {
   const normalizedName = name.trim()
   if (!normalizedName || normalizedName.length > 80) {
     throw new Error('يجب أن يتراوح اسم المجموعة بين حرف واحد و80 حرفًا.')
@@ -72,6 +74,8 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
 
   const groupRef = doc(collection(firestore, 'groups'))
   const memberRef = doc(groupRef, 'members', user.uid)
+  const fundRef = doc(groupRef, 'fund', groupRef.id)
+  const hasFund = options.hasFund ?? true
   let inviteCode = ''
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -87,6 +91,7 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
           createdBy: user.uid,
           createdAt: serverTimestamp(),
           memberUids: [user.uid],
+          hasFund,
         })
         transaction.set(memberRef, {
           uid: user.uid,
@@ -100,6 +105,7 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
           createdAt: serverTimestamp(),
           memberCount: 1,
         })
+        if (hasFund) transaction.set(fundRef, { groupId: groupRef.id, balance: 0 })
       })
       return {
         id: groupRef.id,
@@ -108,6 +114,7 @@ export async function createGroup(name: string, user: GroupUser, firestore: Fire
         createdBy: user.uid,
         createdAt: Date.now(),
         balance: 0,
+        hasFund,
         role: 'owner',
         members: [{ uid: user.uid, displayName: displayNameFor(user), role: 'owner' }],
         memberNames: [displayNameFor(user)],
@@ -129,10 +136,9 @@ export async function getUserGroups(uid: string): Promise<UserGroup[]> {
   const groups = await Promise.all(memberships.docs.map(async (membership) => {
     const groupRef = membership.ref.parent.parent
     if (!groupRef) throw new Error('تعذر تحديد المجموعة المرتبطة بالعضوية.')
-    const [groupSnapshot, memberSnapshots, fundSnapshot] = await Promise.all([
+    const [groupSnapshot, memberSnapshots] = await Promise.all([
       getDoc(groupRef),
       getDocs(collection(groupRef, 'members')),
-      getDoc(doc(groupRef, 'fund', groupRef.id)),
     ])
     if (!groupSnapshot.exists()) return null
 
@@ -140,7 +146,12 @@ export async function getUserGroups(uid: string): Promise<UserGroup[]> {
     if (typeof value.name !== 'string' || typeof value.createdBy !== 'string') {
       throw new Error(`بيانات المجموعة ${groupRef.id} غير صالحة.`)
     }
-    const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
+    if (value.hasFund !== undefined && typeof value.hasFund !== 'boolean') {
+      throw new Error(`إعداد الصندوق في المجموعة ${groupRef.id} غير صالح.`)
+    }
+    const hasFund = value.hasFund !== false
+    const fundSnapshot = hasFund ? await getDoc(doc(groupRef, 'fund', groupRef.id)) : null
+    const balance = fundSnapshot?.exists() ? fundSnapshot.data().balance : 0
     if (typeof balance !== 'number' || !Number.isFinite(balance)) {
       throw new Error(`رصيد المجموعة ${groupRef.id} غير صالح.`)
     }
@@ -163,6 +174,7 @@ export async function getUserGroups(uid: string): Promise<UserGroup[]> {
       createdBy: value.createdBy,
       createdAt: value.createdAt instanceof Timestamp ? value.createdAt.toMillis() : null,
       balance,
+      hasFund,
       role: roleFrom(membership.data().role),
       members,
       memberNames: members.map((member) => member.displayName),
@@ -226,9 +238,13 @@ export async function joinGroup(inviteCode: string, user: GroupUser, firestore: 
   if (typeof groupValue.name !== 'string' || typeof groupValue.createdBy !== 'string') {
     throw new Error('بيانات المجموعة غير صالحة.')
   }
+  if (groupValue.hasFund !== undefined && typeof groupValue.hasFund !== 'boolean') {
+    throw new Error(`إعداد الصندوق في المجموعة ${groupId} غير صالح.`)
+  }
+  const hasFund = groupValue.hasFund !== false
   const members = await getDocs(collection(groupRef, 'members'))
-  const fundSnapshot = await getDoc(doc(groupRef, 'fund', groupId))
-  const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
+  const fundSnapshot = hasFund ? await getDoc(doc(groupRef, 'fund', groupId)) : null
+  const balance = fundSnapshot?.exists() ? fundSnapshot.data().balance : 0
   if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error(`رصيد المجموعة ${groupId} غير صالح.`)
   const groupMembers = members.docs.map((member): GroupMember => {
     const value = member.data()
@@ -247,6 +263,7 @@ export async function joinGroup(inviteCode: string, user: GroupUser, firestore: 
     createdBy: groupValue.createdBy,
     createdAt: groupValue.createdAt instanceof Timestamp ? groupValue.createdAt.toMillis() : null,
     balance,
+    hasFund,
     role: memberRole,
     members: groupMembers,
     memberNames: groupMembers.map((member) => member.displayName),
@@ -277,6 +294,21 @@ export async function updateGroupDetails(groupId: string, name: string, descript
   await updateDoc(doc(firestore, 'groups', groupId), {
     name: normalizedName,
     description: normalizedDescription,
+  })
+}
+
+export async function enableGroupFund(groupId: string, firestore: Firestore = assertDb()): Promise<void> {
+  const groupRef = doc(firestore, 'groups', groupId)
+  const fundRef = doc(groupRef, 'fund', groupId)
+  await runTransaction(firestore, async (transaction) => {
+    const [groupSnapshot, fundSnapshot] = await Promise.all([
+      transaction.get(groupRef),
+      transaction.get(fundRef),
+    ])
+    if (!groupSnapshot.exists()) throw new Error('تعذر العثور على المجموعة.')
+    if (groupSnapshot.data().hasFund !== false) return
+    transaction.update(groupRef, { hasFund: true })
+    if (!fundSnapshot.exists()) transaction.set(fundRef, { groupId, balance: 0, updatedAt: serverTimestamp() })
   })
 }
 
