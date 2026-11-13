@@ -147,7 +147,7 @@ export async function getUserGroups(uid: string): Promise<UserGroup[]> {
       throw new Error(`بيانات المجموعة ${groupRef.id} غير صالحة.`)
     }
     if (value.hasFund !== undefined && typeof value.hasFund !== 'boolean') {
-      throw new Error(`إعداد الصندوق في المجموعة ${groupRef.id} غير صالح.`)
+      throw new Error(`إعداد القطات الدائمة في المجموعة ${groupRef.id} غير صالح.`)
     }
     const hasFund = value.hasFund !== false
     const fundSnapshot = hasFund ? await getDoc(doc(groupRef, 'fund', groupRef.id)) : null
@@ -239,7 +239,7 @@ export async function joinGroup(inviteCode: string, user: GroupUser, firestore: 
     throw new Error('بيانات المجموعة غير صالحة.')
   }
   if (groupValue.hasFund !== undefined && typeof groupValue.hasFund !== 'boolean') {
-    throw new Error(`إعداد الصندوق في المجموعة ${groupId} غير صالح.`)
+    throw new Error(`إعداد القطات الدائمة في المجموعة ${groupId} غير صالح.`)
   }
   const hasFund = groupValue.hasFund !== false
   const members = await getDocs(collection(groupRef, 'members'))

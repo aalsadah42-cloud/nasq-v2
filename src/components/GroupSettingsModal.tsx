@@ -121,9 +121,9 @@ export function GroupSettingsModal({ group, currentUserId, onClose, onChanged }:
         </form>
 
         {!group.hasFund && isManager && <div className="settings-section">
-          <h3>الصندوق</h3>
-          <p>فعّل صندوقًا ماليًا لهذه المجموعة مع الإبقاء على جمعاتها وأعضائها.</p>
-          <button type="button" className="button-primary" disabled={busy} onClick={() => void runAction(() => enableGroupFund(group.id))}><Wallet size={15} /> تفعيل الصندوق لهذه المجموعة</button>
+          <h3>القطات الدائمة</h3>
+          <p>فعّل القطات الدائمة لهذه المجموعة مع الإبقاء على جمعاتها وطلعاتها وأعضائها.</p>
+          <button type="button" className="button-primary" disabled={busy} onClick={() => void runAction(() => enableGroupFund(group.id))}><Wallet size={15} /> تفعيل القطات الدائمة لهذه المجموعة</button>
         </div>}
 
         <div className="settings-section">

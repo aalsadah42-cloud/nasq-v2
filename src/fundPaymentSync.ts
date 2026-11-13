@@ -5,11 +5,14 @@ import {
   FieldPath,
   getDocs,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
   Timestamp,
   type DocumentData,
   type Firestore,
+  updateDoc,
+  where,
 } from 'firebase/firestore'
 import { db } from './lib/firebase'
 
@@ -30,6 +33,19 @@ export type SyncedKattahRequest = {
   total: number
   due: string
   contributions: SyncedContribution[]
+}
+
+export const INDEPENDENT_GATHERINGS = 'independent'
+export type SyncedBillSplit = {
+  id: string
+  createdByUid: string
+  createdByName: string
+  title: string
+  total: number
+  participantUids: string[]
+  participantNames: Record<string, string>
+  sharesByUid: Record<string, number>
+  paymentStatuses: Record<string, 'pending' | 'awaiting' | 'paid'>
 }
 
 const requestsCollection = (groupId: string, firestore: Firestore = assertDb()) => {
@@ -144,7 +160,7 @@ export function subscribeToGatherings<T extends { id: string }>(
   onError: (error: Error) => void,
 ) {
   const firestore = assertDb()
-  if (!groupId) throw new Error('معرّف المجموعة مطلوب لمزامنة الجمعات.')
+  if (!groupId) throw new Error('معرّف المجموعة مطلوب لمزامنة الجمعات والطلعات.')
   return onSnapshot(collection(firestore, 'groups', groupId, 'gatherings'), (snapshot) => {
     try {
       onGatherings(snapshot.docs.map((item) => decode(item.id, item.data())))
@@ -154,13 +170,116 @@ export function subscribeToGatherings<T extends { id: string }>(
   }, onError)
 }
 
+export function subscribeToUserGatherings<T extends { id: string }>(
+  uid: string,
+  decode: (id: string, value: DocumentData) => T,
+  onGatherings: (gatherings: T[]) => void,
+  onError: (error: Error) => void,
+) {
+  const firestore = assertDb()
+  if (!uid) throw new Error('معرّف المستخدم مطلوب لمزامنة الجمعات المستقلة.')
+  return onSnapshot(query(
+    collection(firestore, 'gatherings'),
+    where('participantUids', 'array-contains', uid),
+  ), (snapshot) => {
+    try {
+      onGatherings(snapshot.docs.map((item) => decode(item.id, item.data())))
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)))
+    }
+  }, onError)
+}
+
+export function subscribeToUserBillSplits(
+  uid: string,
+  onSplits: (splits: SyncedBillSplit[]) => void,
+  onError: (error: Error) => void,
+) {
+  const firestore = assertDb()
+  if (!uid) throw new Error('معرّف المستخدم مطلوب لمزامنة طلبات الفواتير.')
+  return onSnapshot(query(
+    collection(firestore, 'billSplits'),
+    where('participantUids', 'array-contains', uid),
+  ), (snapshot) => {
+    try {
+      onSplits(snapshot.docs.map((item) => {
+        const value = item.data()
+        if (
+          typeof value.createdByUid !== 'string'
+          || typeof value.createdByName !== 'string'
+          || typeof value.title !== 'string'
+          || typeof value.total !== 'number'
+          || !Array.isArray(value.participantUids)
+          || !value.participantUids.every((participantUid: unknown) => typeof participantUid === 'string')
+          || !isStringMap(value.participantNames)
+          || !isStringNumberMap(value.sharesByUid)
+          || !isStringStatusMap(value.paymentStatuses)
+        ) throw new Error(`بيانات قسمة الفاتورة ${item.id} غير صالحة.`)
+        return {
+          id: item.id,
+          createdByUid: value.createdByUid,
+          createdByName: value.createdByName,
+          title: value.title,
+          total: value.total,
+          participantUids: value.participantUids,
+          participantNames: value.participantNames as Record<string, string>,
+          sharesByUid: value.sharesByUid as Record<string, number>,
+          paymentStatuses: value.paymentStatuses as SyncedBillSplit['paymentStatuses'],
+        }
+      }))
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)))
+    }
+  }, onError)
+}
+
+function isStringNumberMap(value: unknown): value is Record<string, number> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value).every((item) => typeof item === 'number' && Number.isFinite(item))
+}
+
+function isStringMap(value: unknown): value is Record<string, string> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value).every((item) => typeof item === 'string')
+}
+
+function isStringStatusMap(value: unknown): value is Record<string, SyncedBillSplit['paymentStatuses'][string]> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value).every((item) => ['pending', 'awaiting', 'paid'].includes(String(item)))
+}
+
+export async function createSyncedBillSplit(input: Omit<SyncedBillSplit, 'id'>, firestore: Firestore = assertDb()) {
+  if (!input.title.trim() || !Number.isFinite(input.total) || input.total <= 0
+    || !input.participantUids.length || input.participantUids.length > 30
+    || !input.participantUids.includes(input.createdByUid)) {
+    throw new Error('بيانات قسمة الفاتورة غير صالحة.')
+  }
+  const ref = doc(collection(firestore, 'billSplits'))
+  await runTransaction(firestore, async (transaction) => {
+    transaction.set(ref, input)
+  })
+  return ref.id
+}
+
+export async function setSyncedBillSplitStatus(
+  splitId: string,
+  uid: string,
+  status: 'awaiting' | 'paid',
+  firestore: Firestore = assertDb(),
+) {
+  if (!splitId || !uid) throw new Error('معرّف الفاتورة والعضو مطلوبان.')
+  await updateDoc(doc(firestore, 'billSplits', splitId), new FieldPath('paymentStatuses', uid), status)
+}
+
 export async function createSyncedGathering<T extends { id: string }>(
   groupId: string,
   gathering: T,
   firestore: Firestore = assertDb(),
 ) {
   if (!groupId) throw new Error('معرّف المجموعة مطلوب لإنشاء الجمعة.')
-  const ref = doc(firestore, 'groups', groupId, 'gatherings', gathering.id)
+  const ref = groupId === INDEPENDENT_GATHERINGS
+    ? doc(firestore, 'gatherings', gathering.id)
+    : doc(firestore, 'groups', groupId, 'gatherings', gathering.id)
   await runTransaction(firestore, async (transaction) => {
     const snapshot = await transaction.get(ref)
     if (snapshot.exists()) throw new Error('توجد جمعة بهذا المعرّف بالفعل.')
@@ -176,7 +295,9 @@ export async function mutateSyncedGathering<T extends { id: string }>(
   firestore: Firestore = assertDb(),
 ) {
   if (!groupId || !gatheringId) throw new Error('معرّف المجموعة والجمعة مطلوبان للتحديث.')
-  const ref = doc(firestore, 'groups', groupId, 'gatherings', gatheringId)
+  const ref = groupId === INDEPENDENT_GATHERINGS
+    ? doc(firestore, 'gatherings', gatheringId)
+    : doc(firestore, 'groups', groupId, 'gatherings', gatheringId)
   return runTransaction(firestore, async (transaction) => {
     const snapshot = await transaction.get(ref)
     if (!snapshot.exists()) throw new Error('تعذر العثور على الجمعة.')
@@ -394,7 +515,7 @@ export async function decideSyncedContribution(
     transaction.delete(memberConfirmationRef)
     if (shouldAddToBalance) {
       const balance = fundSnapshot?.exists() ? fundSnapshot.data().balance : 0
-      if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد الصندوق غير صالح.')
+      if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد القطات الدائمة غير صالح.')
       transaction.set(fundRef, {
         groupId,
         balance: balance + contribution.amount,
@@ -431,7 +552,7 @@ export async function approveAllSyncedContributions(
     const fundRef = balanceRef(groupId, firestore)
     const fundSnapshot = await transaction.get(fundRef)
     const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
-    if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد الصندوق غير صالح.')
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد القطات الدائمة غير صالح.')
 
     transaction.update(requestRef, isLegacyRequest
       ? {

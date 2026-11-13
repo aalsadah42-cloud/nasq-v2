@@ -25,8 +25,15 @@ import {
 } from '../src/fundPaymentSync'
 import { createGroup, enableGroupFund, joinGroup, leaveGroup, removeGroupMember } from '../src/lib/groups'
 import {
+  createSyncedBillSplit,
+  createSyncedGathering,
+  INDEPENDENT_GATHERINGS,
+  setSyncedBillSplitStatus,
+} from '../src/fundPaymentSync'
+import {
   approveSyncedObligationPayment,
   decideSyncedReimbursement,
+  reportSyncedObligationPayment,
 } from '../src/lib/fundOperations'
 
 const projectId = 'nassaq-ohqtgp'
@@ -225,10 +232,85 @@ test('new groups initialize membership tracking at one member', async () => {
   }, creatorDb)
 
   const groupSnapshot = await getDoc(doc(creatorDb, groupPath(group.id)))
+  assert.equal(groupSnapshot.data()?.createdBy, 'new-owner')
   assert.deepEqual(groupSnapshot.data()?.memberUids, ['new-owner'])
   assert.equal(groupSnapshot.data()?.hasFund, true)
+  const ownerSnapshot = await getDoc(doc(creatorDb, `groups/${group.id}/members/new-owner`))
+  assert.equal(ownerSnapshot.data()?.uid, 'new-owner')
+  assert.equal(ownerSnapshot.data()?.role, 'owner')
   assert.equal((await getDoc(doc(creatorDb, `groups/${group.id}/fund/${group.id}`))).data()?.balance, 0)
-  assert.equal((await getDoc(doc(creatorDb, `inviteCodes/${group.inviteCode}`))).data()?.memberCount, 1)
+  const inviteSnapshot = await getDoc(doc(creatorDb, `inviteCodes/${group.inviteCode}`))
+  assert.equal(inviteSnapshot.data()?.groupId, group.id)
+  assert.equal(inviteSnapshot.data()?.createdBy, 'new-owner')
+  assert.equal(inviteSnapshot.data()?.memberCount, 1)
+
+  const unauthenticatedDb = environment.unauthenticatedContext().firestore()
+  await assert.rejects(createGroup('Unauthenticated', {
+    uid: 'not-signed-in',
+    displayName: 'Unauthenticated',
+    email: null,
+  }, unauthenticatedDb))
+
+  const mismatchedAuthDb = environment.authenticatedContext('different-user').firestore()
+  await assert.rejects(createGroup('Wrong owner', {
+    uid: 'requested-owner',
+    displayName: 'Wrong owner',
+    email: null,
+  }, mismatchedAuthDb))
+})
+
+test('independent gatherings are shared only with invitees and allow self RSVP', async () => {
+  const creatorDb = environment.authenticatedContext('organizer').firestore()
+  await createSyncedGathering(INDEPENDENT_GATHERINGS, {
+    id: 'independent-dinner',
+    workspaceId: INDEPENDENT_GATHERINGS,
+    createdById: 'organizer',
+    createdByName: 'Organizer',
+    participantUids: ['organizer', 'invitee'],
+    participants: [
+      { uid: 'organizer', name: 'Organizer', decision: 'joined' },
+      { uid: 'invitee', name: 'Invitee', decision: 'pending' },
+    ],
+    participantDecisionsByUid: {},
+    expensesByUid: {},
+    taskClaimsByUid: {},
+    expenses: [],
+    tasks: [],
+  }, creatorDb)
+
+  const inviteeDb = environment.authenticatedContext('invitee').firestore()
+  const gatheringRef = doc(inviteeDb, 'gatherings/independent-dinner')
+  await assertSucceeds(getDoc(gatheringRef))
+  await assertSucceeds(updateDoc(gatheringRef, {
+    participantDecisionsByUid: { invitee: 'joined' },
+  }))
+  await assertFails(updateDoc(gatheringRef, {
+    participantDecisionsByUid: { organizer: 'declined' },
+  }))
+  await assertFails(getDoc(doc(environment.authenticatedContext('outsider').firestore(), 'gatherings/independent-dinner')))
+})
+
+test('bill-split requests track participant payment independently and only creator confirms', async () => {
+  const creatorDb = environment.authenticatedContext('split-owner').firestore()
+  const splitId = await createSyncedBillSplit({
+    createdByUid: 'split-owner',
+    createdByName: 'Split Owner',
+    title: 'Dinner',
+    total: 40,
+    participantUids: ['split-owner', 'split-member'],
+    participantNames: { 'split-owner': 'Split Owner', 'split-member': 'Split Member' },
+    sharesByUid: { 'split-owner': 20, 'split-member': 20 },
+    paymentStatuses: { 'split-owner': 'pending', 'split-member': 'pending' },
+  }, creatorDb)
+
+  const memberDb = environment.authenticatedContext('split-member').firestore()
+  await assertSucceeds(getDoc(doc(memberDb, `billSplits/${splitId}`)))
+  await assertSucceeds(setSyncedBillSplitStatus(splitId, 'split-member', 'awaiting', memberDb))
+  await assertFails(setSyncedBillSplitStatus(splitId, 'split-member', 'paid', memberDb))
+  await assertFails(getDoc(doc(environment.authenticatedContext('split-outsider').firestore(), `billSplits/${splitId}`)))
+
+  await assertSucceeds(setSyncedBillSplitStatus(splitId, 'split-member', 'paid', creatorDb))
+  assert.equal((await getDoc(doc(creatorDb, `billSplits/${splitId}`))).data()?.paymentStatuses['split-member'], 'paid')
 })
 
 test('event groups do not create a fund until a manager enables it', async () => {
@@ -343,6 +425,23 @@ test('concurrent contribution approvals serialize and credit the balance exactly
   ])
   assert.deepEqual(duplicate, [null, null])
   assert.equal((await getDoc(doc(managerDb, 'groups/group-a/fund/group-a'))).data()?.balance, 130)
+})
+
+test('members can confirm obligation payments before the due date', async () => {
+  const memberDb = environment.authenticatedContext('member-a').firestore()
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'groups/group-a/obligations/21'), {
+      workspaceId: 'group-a',
+      title: 'Future rent',
+      amount: 10,
+      cadence: 'monthly',
+      due: '2099-12-01',
+      status: 'upcoming',
+    })
+  })
+
+  assert.equal(await reportSyncedObligationPayment('group-a', 21, 'member-a', memberDb), true)
+  assert.equal((await getDoc(doc(memberDb, 'groups/group-a/obligations/21'))).data()?.status, 'awaiting')
 })
 
 test('duplicate obligation and reimbursement approvals do not double-charge the fund', async () => {

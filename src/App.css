@@ -573,6 +573,12 @@
   background: #f4f8f5;
 }
 
+.create-menu .create-menu-join {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 7px 7px;
+}
+
 .create-menu button > span {
   display: flex;
   flex-direction: column;
@@ -1310,15 +1316,6 @@
   margin-bottom: 25px;
 }
 
-.fund-cards-large {
-  margin-bottom: 20px;
-}
-
-.fund-cards-large .fund-card {
-  min-height: 172px;
-  padding: 17px;
-}
-
 .balance-banner {
   display: grid;
   grid-template-columns: minmax(210px, .75fr) minmax(0, 1.25fr);
@@ -1508,16 +1505,6 @@
 .fund-quick-switch-list b { color: #187653; font-size: 10px; white-space: nowrap; }
 .fund-quick-switch-list b small { font-weight: 500; }
 
-.fund-tabs { display: flex; gap: 4px; overflow-x: auto; margin: 2px 0 14px; border-bottom: 1px solid var(--line); scrollbar-width: none; }
-.fund-tabs::-webkit-scrollbar { display: none; }
-.fund-tabs button { position: relative; flex: 0 0 auto; min-height: 42px; padding: 0 14px; color: #7d8981; background: transparent; border: 0; cursor: pointer; font-size: 10px; white-space: nowrap; }
-.fund-tabs button::after { position: absolute; right: 12px; bottom: -1px; left: 12px; height: 2px; content: ''; background: transparent; }
-.fund-tabs button:hover,
-.fund-tabs button.selected { color: var(--green); }
-.fund-tabs button.selected { font-weight: 700; }
-.fund-tabs button.selected::after { background: var(--green); }
-.fund-archive-section { margin-top: 0; }
-.fund-archive-card.active .fund-card { border-color: #83b69a; box-shadow: inset 0 0 0 1px #83b69a; }
 .due-badge { display: inline-flex; align-items: center; gap: 5px; width: fit-content; padding: 3px 7px; border-radius: 5px; font-size: 8px; font-weight: 650; white-space: nowrap; }
 .due-badge i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .due-soon { color: #926b17; background: #fff4d4; }
@@ -1582,6 +1569,24 @@
   margin-top: 14px;
   padding: 16px 18px 6px;
 }
+
+.fund-collapsible-heading { align-items: flex-start; }
+.fund-section-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+.fund-section-toggle { display: grid; place-items: center; width: 32px; height: 32px; color: #6d8073; background: #f5f8f5; border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.fund-section-toggle:hover { color: var(--green); border-color: #b7d5c3; }
+.fund-section-toggle svg { transition: transform .18s ease; }
+.fund-section-toggle.expanded svg { transform: rotate(180deg); }
+.fund-section-panel [hidden] { display: none; }
+.fund-history-section .text-button { white-space: nowrap; }
+
+.fund-loading-state { display: grid; gap: 14px; margin-top: 12px; padding: 24px; }
+.fund-skeleton { overflow: hidden; position: relative; height: 12px; background: #edf2ee; border-radius: 6px; }
+.fund-skeleton::after { position: absolute; inset: 0; content: ''; background: linear-gradient(90deg, transparent, #ffffffb8, transparent); transform: translateX(100%); animation: fund-skeleton-shimmer 1.4s infinite; }
+.fund-skeleton-title { width: min(250px, 70%); height: 21px; }
+.fund-skeleton-copy { width: min(390px, 92%); }
+.fund-skeleton-action { width: 145px; height: 38px; margin-top: 5px; border-radius: 8px; }
+@keyframes fund-skeleton-shimmer { to { transform: translateX(-100%); } }
+@media (prefers-reduced-motion: reduce) { .fund-skeleton::after { animation: none; } }
 
 .workspace-members-panel {
   margin-bottom: 14px;
@@ -2525,6 +2530,8 @@ td:first-child small {
 }
 
 .participant-joined { color: #528361; background: #eff7f0; }
+.participant-paid { color: #528361; background: #eff7f0; }
+.participant-awaiting { color: #b17a2e; background: #fbf5e9; }
 .participant-declined { color: #98725f; background: #f8f2ee; }
 .participant-pending { color: #8d8f78; background: #f7f6ec; }
 
@@ -2989,6 +2996,71 @@ td:first-child small {
 .split-form {
   padding: 21px;
 }
+
+.split-title-field { margin-top: 16px; }
+
+.split-contact-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.split-contact {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 7px 9px;
+  background: #fbfcfb;
+  border: 1px solid #e6ece7;
+  border-radius: 8px;
+}
+
+.split-contact > input { accent-color: var(--green); }
+.split-contact > strong { flex: 1; color: #405048; font-size: 10px; }
+.split-contact .person-avatar { margin: 0; }
+.split-contact .person-share { color: #3f6950; font-size: 10px; }
+
+.bill-split-history { margin-top: 18px; padding: 20px; }
+
+.bill-split-request {
+  margin-top: 10px;
+  padding: 12px;
+  background: #fbfcfb;
+  border: 1px solid #e6ece7;
+  border-radius: 9px;
+}
+
+.bill-split-heading,
+.bill-split-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.bill-split-heading strong { color: #35453c; font-size: 11px; }
+.bill-split-heading > span,
+.bill-split-member { color: #728078; font-size: 9px; }
+.bill-split-member { min-height: 38px; border-top: 1px solid #edf0ed; }
+.bill-split-member > span:first-child { flex: 1; }
+.bill-split-member .button-outline { min-height: 28px; padding: 0 8px; font-size: 9px; }
+
+.past-gathering-list { display: grid; }
+
+.past-gathering-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  border-top: 1px solid #edf0ed;
+}
+
+.past-gathering-row > span { display: grid; gap: 4px; }
+.past-gathering-row strong { color: #405048; font-size: 10px; }
+.past-gathering-row small { color: #89958d; font-size: 9px; }
+.past-gathering-row .button-outline { min-height: 30px; padding: 0 10px; font-size: 9px; }
 
 .split-step-heading {
   display: flex;
@@ -3500,14 +3572,46 @@ td:first-child small {
 
 .modal-field input::placeholder { color: #b1b9b3; }
 
-.group-type-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 15px; padding: 0; border: 0; }
-.group-type-options legend { margin-bottom: 7px; color: #65746a; font-size: 9px; font-weight: 650; }
-.group-type-options label { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 11px; background: #fbfcfb; border: 1px solid #e6ece7; border-radius: 8px; cursor: pointer; }
-.group-type-options label.selected { background: #f1f8f3; border-color: #9dc7aa; }
-.group-type-options input { flex: 0 0 auto; margin: 3px 0 0; accent-color: var(--green); }
-.group-type-options label > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.group-type-options strong { color: #405048; font-size: 10px; }
-.group-type-options small { color: #89958d; font-size: 8px; line-height: 1.5; }
+.gathering-participant-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0 0 13px;
+  padding: 10px;
+  border: 1px solid #e6ece7;
+  border-radius: 8px;
+}
+
+.gathering-participant-picker legend {
+  padding: 0 4px;
+  color: #65746a;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.gathering-participant-picker label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #405048;
+  font-size: 9px;
+}
+
+.gathering-participant-picker label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gathering-participant-picker small {
+  color: #89958d;
+  font-size: 8px;
+}
+
+.gathering-participant-picker input {
+  accent-color: var(--green);
+}
 
 .mini-date-selector {
   display: flex;
@@ -4042,10 +4146,6 @@ td:first-child small {
   .fund-workspace-actions > button { gap: 6px; padding: 8px; }
   .fund-quick-switch { grid-template-columns: 1fr; gap: 6px; }
   .fund-quick-switch-heading { flex-direction: row; align-items: baseline; gap: 8px; }
-  .fund-tabs { gap: 0; margin-bottom: 10px; }
-  .fund-tabs button { min-height: 44px; padding: 0 11px; font-size: 9px; }
-  .fund-archive-section .fund-cards-large { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .fund-archive-section .fund-card { min-height: 155px; padding: 11px; }
   .due-badge { max-width: 100%; white-space: normal; }
   .action-symbol { width: 29px; height: 29px; }
   .fund-section-panel { padding: 14px 12px 5px; }
@@ -4062,7 +4162,6 @@ td:first-child small {
 }
 
 @media (max-width: 470px) {
-  .group-type-options { grid-template-columns: 1fr; }
   .page-content { padding-right: 12px; padding-left: 12px; }
   .topbar { padding-right: 10px; padding-left: 10px; }
   .notification-button { width: 44px; height: 44px; }
@@ -4123,12 +4222,14 @@ td:first-child small {
   .balance-mini-stats span + span { border-right: 0; padding-right: 0; }
   .balance-mini-stats span:last-child { grid-column: 1 / -1; }
   .fund-workspace-actions { grid-template-columns: 1fr; }
-  .fund-archive-section .fund-cards-large { grid-template-columns: 1fr; }
   .fund-workspace-actions > button { min-height: 49px; padding: 8px 10px; }
   .fund-workspace-actions > button > svg { margin-right: auto; }
   .kattah-header-actions { gap: 5px; }
-  .kattah-panel > .panel-heading { align-items: stretch; flex-direction: column; }
-  .kattah-header-actions { width: 100%; justify-content: space-between; }
+  .fund-collapsible-heading { align-items: stretch; flex-direction: column; }
+  .fund-section-controls { width: 100%; justify-content: space-between; gap: 5px; }
+  .fund-section-controls .text-button { font-size: 8px; }
+  .fund-section-toggle { width: 30px; height: 30px; flex: 0 0 auto; }
+  .kattah-header-actions { width: auto; justify-content: flex-end; }
   .batch-approve { min-height: 44px; padding: 0 10px; font-size: 9px; }
   .request-summary { padding: 9px; gap: 8px; }
   .request-summary > span { flex: 1 1 40%; }

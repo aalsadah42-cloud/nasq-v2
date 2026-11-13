@@ -102,7 +102,7 @@ export function subscribeToFundOperations(
   onError: (error: Error) => void,
   firestore: Firestore = assertDb(),
 ) {
-  if (!groupId) throw new Error('معرّف المجموعة مطلوب لمزامنة عمليات الصندوق.')
+  if (!groupId) throw new Error('معرّف المجموعة مطلوب لمزامنة عمليات القطات الدائمة.')
   const unsubscribeObligations = onSnapshot(collection(firestore, 'groups', groupId, 'obligations'), (snapshot) => {
     try {
       onObligations(snapshot.docs.map((item) => decodeObligation(item.id, item.data(), groupId)))
@@ -174,7 +174,7 @@ export async function approveSyncedObligationPayment(
     const fundDocument = balanceRef(firestore, groupId)
     const fundSnapshot = await transaction.get(fundDocument)
     const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
-    if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد الصندوق غير صالح.')
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد القطات الدائمة غير صالح.')
 
     transaction.update(obligationDocument, { status: 'paid', paidAt: serverTimestamp() })
     transaction.set(fundDocument, {
@@ -220,7 +220,7 @@ export async function decideSyncedReimbursement(
       const ref = balanceRef(firestore, groupId)
       const fundSnapshot = await transaction.get(ref)
       const balance = fundSnapshot.exists() ? fundSnapshot.data().balance : 0
-      if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد الصندوق غير صالح.')
+      if (typeof balance !== 'number' || !Number.isFinite(balance)) throw new Error('رصيد القطات الدائمة غير صالح.')
       fundUpdate = { balance: balance - reimbursement.amount, ref }
     }
 
